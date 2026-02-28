@@ -1,0 +1,587 @@
+"""
+# Social Platform Enumeration
+The supported social media platforms
+"""
+enum SocialPlatform {
+  x
+  reddit
+}
+
+"""
+# Social Listener Type Enumeration
+The type of social media listener (what the listener tracks)
+"""
+enum SocialListenerType {
+  keyword
+  hashtag
+  mention
+  user
+  group
+}
+
+"""
+# Social Account
+A connected social media account
+"""
+type SocialAccount {
+  "Unique identifier"
+  id: ID!
+
+  "The social media platform (e.g. x, reddit)"
+  provider: SocialPlatform!
+
+  "Account ID on the platform"
+  providerAccountId: String!
+
+  "Display name or handle"
+  name: String!
+
+  "Email associated with the account"
+  email: String
+
+  "Profile avatar URL"
+  avatar: String
+
+  "Profile URL on the platform"
+  profileUrl: String
+
+  "Whether the account is actively connected"
+  isActive: Boolean!
+
+  "OAuth scopes granted"
+  scopes: [String!]
+
+  "Platform-specific metadata"
+  metadata: Any
+
+  "When the account was connected"
+  createdAt: Date!
+
+  "When the account was last updated"
+  updatedAt: Date!
+}
+
+"""
+# Social Listener
+A configured social media listener / monitor
+"""
+type SocialListener {
+  "Unique identifier"
+  id: ID!
+
+  "Human-readable name for this listener"
+  name: String!
+
+  "The platform to listen on"
+  platform: SocialPlatform!
+
+  "The type of listener"
+  type: SocialListenerType!
+
+  "The search query or term to monitor"
+  query: String!
+
+  "Polling interval in minutes (0 = webhook-based)"
+  intervalMinutes: Int!
+
+  "Actions to execute when matches are found"
+  actions: [String!]
+
+  "Whether the listener is currently active"
+  isActive: Boolean!
+
+  "When the listener was last executed"
+  lastRun: Date
+
+  "The user who owns this listener"
+  owner: ID!
+
+  "Listener-specific metadata (e.g. autoReplyTemplate)"
+  metadata: Any
+
+  "When the listener was created"
+  createdAt: Date!
+
+  "When the listener was last updated"
+  updatedAt: Date!
+}
+
+"""
+# Social Post Author
+The author of a social media post
+"""
+type SocialPostAuthor {
+  "Author ID on the platform"
+  id: String!
+
+  "Author username or handle"
+  username: String!
+
+  "Author display name"
+  name: String
+
+  "Author avatar URL"
+  avatar: String
+}
+
+"""
+# Social Post Metrics
+Engagement metrics for a social media post
+"""
+type SocialPostMetrics {
+  "Number of likes or upvotes"
+  likes: Int!
+
+  "Number of shares or retweets"
+  shares: Int!
+
+  "Number of comments or replies"
+  comments: Int!
+
+  "Number of views or impressions"
+  views: Int
+}
+
+"""
+# Social Post
+A social media post collected from a platform
+"""
+type SocialPost {
+  "Unique identifier"
+  id: ID!
+
+  "The platform this post originated from"
+  platform: SocialPlatform!
+
+  "The ID of the post on the platform"
+  sourceId: String!
+
+  "Direct URL to the post"
+  url: String
+
+  "Post author information"
+  author: SocialPostAuthor!
+
+  "Post text content"
+  content: String!
+
+  "Hashtags extracted from the post"
+  hashtags: [String!]
+
+  "User mentions extracted from the post"
+  mentions: [String!]
+
+  "Attached media URLs"
+  media: [String!]
+
+  "Engagement metrics"
+  metrics: SocialPostMetrics
+
+  "Sentiment score (-1 to 1)"
+  sentiment: Float
+
+  "Platform-specific metadata"
+  metadata: Any
+
+  "When the post was published on the platform"
+  publishedAt: Date!
+
+  "When the post was collected by SocialEyes"
+  collectedAt: Date!
+}
+
+"""
+# Social Message Participant
+A participant in a direct message conversation
+"""
+type SocialMessageParticipant {
+  "Participant ID on the platform"
+  id: String!
+
+  "Participant username or handle"
+  username: String!
+
+  "Participant display name"
+  name: String
+}
+
+"""
+# Social Message Attachment
+A file attached to a social message
+"""
+type SocialMessageAttachment {
+  "Attachment type (image, video, file, etc.)"
+  type: String!
+
+  "URL to the attachment"
+  url: String!
+}
+
+"""
+# Social Message
+A direct message from a social media platform
+"""
+type SocialMessage {
+  "Unique identifier"
+  id: ID!
+
+  "The platform this message originated from"
+  platform: SocialPlatform!
+
+  "The ID of the message on the platform"
+  sourceId: String!
+
+  "Conversation thread identifier"
+  conversationId: String!
+
+  "Message sender"
+  from: SocialMessageParticipant!
+
+  "Message recipients"
+  to: [SocialMessageParticipant!]!
+
+  "Message text content"
+  content: String!
+
+  "File attachments"
+  attachments: [SocialMessageAttachment!]
+
+  "Whether this is an incoming message (vs. sent by us)"
+  isIncoming: Boolean!
+
+  "When the message was read"
+  readAt: Date
+
+  "When the message was sent"
+  sentAt: Date!
+
+  "Platform-specific metadata"
+  metadata: Any
+}
+
+# ─────────────────────────────────────────────
+# PAGED RESULT TYPES
+# ─────────────────────────────────────────────
+
+"""
+# Paged Social Posts
+Paginated result set for social posts
+"""
+type SocialEyesPagedPosts {
+  "Paging metadata"
+  paging: PagingResult
+
+  "The post data"
+  posts: [SocialPost!]!
+}
+
+"""
+# Paged Social Messages
+Paginated result set for social messages
+"""
+type SocialEyesPagedMessages {
+  "Paging metadata"
+  paging: PagingResult
+
+  "The message data"
+  messages: [SocialMessage!]!
+}
+
+# ─────────────────────────────────────────────
+# INPUT TYPES
+# ─────────────────────────────────────────────
+
+"""
+# Connect Account Input
+Input for connecting a new social media account
+"""
+input SocialEyesConnectAccountInput {
+  "The platform to connect (x, reddit)"
+  platform: SocialPlatform!
+
+  "OAuth access token"
+  accessToken: String!
+
+  "OAuth refresh token"
+  refreshToken: String
+
+  "Token expiry date"
+  tokenExpiry: Date
+
+  "Account ID on the platform"
+  providerAccountId: String!
+
+  "Display name or handle"
+  name: String!
+
+  "Email address"
+  email: String
+
+  "Avatar URL"
+  avatar: String
+
+  "OAuth scopes"
+  scopes: [String!]
+}
+
+"""
+# Create Listener Input
+Input for creating a new social media listener
+"""
+input SocialEyesCreateListenerInput {
+  "Human-readable name"
+  name: String!
+
+  "Platform to monitor"
+  platform: SocialPlatform!
+
+  "Type of listener"
+  type: SocialListenerType!
+
+  "Search query or term"
+  query: String!
+
+  "Polling interval in minutes (default 15, 0 for webhook)"
+  intervalMinutes: Int
+
+  "Actions to execute on match (e.g. emit-event, auto-reply)"
+  actions: [String!]
+
+  "Additional metadata (e.g. autoReplyTemplate)"
+  metadata: Any
+}
+
+"""
+# Update Listener Input
+Input for updating an existing listener
+"""
+input SocialEyesUpdateListenerInput {
+  "Updated name"
+  name: String
+
+  "Updated platform"
+  platform: SocialPlatform
+
+  "Updated type"
+  type: SocialListenerType
+
+  "Updated search query"
+  query: String
+
+  "Updated polling interval"
+  intervalMinutes: Int
+
+  "Updated actions"
+  actions: [String!]
+
+  "Updated metadata"
+  metadata: Any
+}
+
+"""
+# Send Message Input
+Input for sending a direct message
+"""
+input SocialEyesSendMessageInput {
+  "The account ID to send from"
+  accountId: ID!
+
+  "Recipient identifier (user ID or username)"
+  to: String!
+
+  "Message content"
+  content: String!
+}
+
+"""
+# Feed Filter Input
+Filter criteria for querying the social feed
+"""
+input SocialEyesFeedFilter {
+  "Filter by platform"
+  platform: SocialPlatform
+
+  "Filter posts published after this date"
+  dateFrom: Date
+
+  "Filter posts published before this date"
+  dateTo: Date
+
+  "Full-text search query"
+  search: String
+
+  "Filter by the listener that collected the post"
+  listenerId: ID
+}
+
+"""
+# Listener Filter Input
+Filter criteria for querying listeners
+"""
+input SocialEyesListenerFilter {
+  "Filter by platform"
+  platform: SocialPlatform
+
+  "Filter by listener type"
+  type: SocialListenerType
+
+  "Filter by active status"
+  isActive: Boolean
+}
+
+"""
+# Account Filter Input
+Filter criteria for querying accounts
+"""
+input SocialEyesAccountFilter {
+  "Filter by platform"
+  platform: SocialPlatform
+
+  "Filter by active status"
+  isActive: Boolean
+}
+
+# ─────────────────────────────────────────────
+# RESULT TYPES
+# ─────────────────────────────────────────────
+
+"""
+# Inbox Sync Result
+Result of an inbox synchronization operation
+"""
+type SocialEyesSyncResult {
+  "Number of new messages synced"
+  newMessages: Int!
+}
+
+# ─────────────────────────────────────────────
+# QUERIES
+# ─────────────────────────────────────────────
+
+extend type Query {
+  """
+  # List Social Accounts
+  Retrieve all connected social media accounts for the current user
+  """
+  socialEyesAccounts(filter: SocialEyesAccountFilter): [SocialAccount!]!
+
+  """
+  # Get Social Account
+  Retrieve a specific social media account by ID
+  """
+  socialEyesAccount(id: ID!): SocialAccount
+
+  """
+  # List Listeners
+  Retrieve all listeners for the current user with optional filtering
+  """
+  socialEyesListeners(filter: SocialEyesListenerFilter): [SocialListener!]!
+
+  """
+  # Get Listener
+  Retrieve a specific listener by ID
+  """
+  socialEyesListener(id: ID!): SocialListener
+
+  """
+  # Get Social Feed
+  Retrieve aggregated social posts with filtering and pagination
+  """
+  socialEyesFeed(filter: SocialEyesFeedFilter, paging: PagingRequest): SocialEyesPagedPosts!
+
+  """
+  # Get Social Post
+  Retrieve a specific social post by ID
+  """
+  socialEyesPost(id: ID!): SocialPost
+
+  """
+  # Get Inbox
+  Retrieve the unified inbox of direct messages for the current user
+  """
+  socialEyesInbox(paging: PagingRequest): SocialEyesPagedMessages!
+
+  """
+  # Get Conversation
+  Retrieve messages in a specific conversation thread
+  """
+  socialEyesConversation(conversationId: String!, paging: PagingRequest): SocialEyesPagedMessages!
+
+  """
+  # Get Sent Messages
+  Retrieve sent messages for the current user
+  """
+  socialEyesSentMessages(paging: PagingRequest): SocialEyesPagedMessages!
+}
+
+# ─────────────────────────────────────────────
+# MUTATIONS
+# ─────────────────────────────────────────────
+
+extend type Mutation {
+  """
+  # Connect Social Account
+  Connect a new social media account with OAuth credentials
+  """
+  socialEyesConnectAccount(input: SocialEyesConnectAccountInput!): SocialAccount!
+
+  """
+  # Disconnect Social Account
+  Disconnect (deactivate) a social media account
+  """
+  socialEyesDisconnectAccount(id: ID!): SocialAccount
+
+  """
+  # Refresh Social Account
+  Refresh OAuth tokens for a connected account
+  """
+  socialEyesRefreshAccount(id: ID!): SocialAccount
+
+  """
+  # Create Listener
+  Create a new social media listener/monitor
+  """
+  socialEyesCreateListener(input: SocialEyesCreateListenerInput!): SocialListener!
+
+  """
+  # Update Listener
+  Update an existing listener configuration
+  """
+  socialEyesUpdateListener(id: ID!, input: SocialEyesUpdateListenerInput!): SocialListener
+
+  """
+  # Delete Listener
+  Delete a listener permanently
+  """
+  socialEyesDeleteListener(id: ID!): Boolean!
+
+  """
+  # Toggle Listener
+  Enable or disable a listener
+  """
+  socialEyesToggleListener(id: ID!, isActive: Boolean!): SocialListener
+
+  """
+  # Send Message
+  Send a direct message via a connected social account
+  """
+  socialEyesSendMessage(input: SocialEyesSendMessageInput!): SocialMessage!
+
+  """
+  # Reply to Message
+  Reply to an existing direct message
+  """
+  socialEyesReplyToMessage(messageId: ID!, content: String!): SocialMessage!
+
+  """
+  # Mark Message as Read
+  Mark a direct message as read
+  """
+  socialEyesMarkMessageRead(id: ID!): SocialMessage
+
+  """
+  # Sync Inbox
+  Synchronize inbox messages from a specific account's platform
+  """
+  socialEyesSyncInbox(accountId: ID!): SocialEyesSyncResult!
+}
