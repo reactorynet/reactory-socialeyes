@@ -2,6 +2,10 @@ import SocialEyesGraphql from './graphql';
 import services from './services';
 import models from './models';
 import commands from './cli';
+import workflows from './workflows';
+import SocialAccounts from './forms/Accounts/SocialAccounts';
+import SocialFeed from './forms/Feed/SocialFeed';
+import SocialMessages from './forms/Messages/SocialMessages';
 
 const SocialEyesModule: Reactory.Server.IReactoryModule = {
     id: 'reactory-socialeyes',
@@ -14,8 +18,8 @@ const SocialEyesModule: Reactory.Server.IReactoryModule = {
     ],
     priority: 3,
     graphDefinitions: SocialEyesGraphql,
-    workflows: [],
-    forms: [],
+    workflows,
+    forms: [SocialAccounts, SocialFeed, SocialMessages],
     services,
     models,
     clientPlugins: [],

@@ -1,0 +1,244 @@
+# SocialEyes — Content Takedown Workflow
+# Manages the lifecycle of content takedown requests for policy violations
+
+nameSpace: reactory-socialeyes
+name: ContentTakedown
+version: 1.0.0
+description: >
+  Automate the process of identifying, validating, and tracking takedown requests
+  for impersonation, copyright violations, or other policy violations across
+  social media platforms. Handles evidence collection, duplicate detection,
+  and tracking record creation.
+author: Reactory
+tags:
+  - social-media
+  - takedown
+  - content-moderation
+  - brand-protection
+
+metadata:
+  timeout: 600000  # 10 minutes
+  retryPolicy:
+    maxAttempts: 3
+    backoffStrategy: exponential
+    initialDelay: 2000
+    maxDelay: 30000
+  security:
+    requiresAuthentication: true
+    roles:
+      - USER
+
+inputs:
+  platform:
+    type: string
+    required: true
+    description: Target platform for takedown
+    validation:
+      enum:
+        - x
+        - reddit
+
+  targetContent:
+    type: object
+    required: true
+    description: >
+      Content to be taken down. Must include contentType (post, account, comment),
+      contentId (platform-specific ID), and optionally a direct URL.
+
+  violationType:
+    type: string
+    required: true
+    description: Type of violation being reported
+    validation:
+      enum:
+        - impersonation
+        - copyright
+        - trademark
+        - harassment
+        - spam
+        - other
+
+  reportingAccountId:
+    type: string
+    required: true
+    description: Account ID of the reporter filing this request
+
+  evidence:
+    type: object
+    required: true
+    description: >
+      Evidence supporting the takedown request. Should include a description
+      and optionally screenshots (URL array) and related URLs.
+
+  urgency:
+    type: string
+    required: false
+    default: normal
+    description: Priority level for processing
+    validation:
+      enum:
+        - low
+        - normal
+        - high
+        - critical
+
+outputs:
+  takedownRequestId:
+    type: string
+    source: step.createRecord.trackingId
+    description: Internal tracking ID for this takedown request
+
+  status:
+    type: string
+    source: step.createRecord.status
+    description: Current status of the takedown request
+
+  contentDetails:
+    type: object
+    source: step.fetchContent.contentData
+    description: Fetched details about the violating content
+
+variables:
+  trackingId: null
+  isDuplicate: false
+  contentData: null
+
+steps:
+  # Step 1: Log takedown request initiation
+  - id: logStart
+    name: Log Takedown Request
+    type: log
+    config:
+      message: "Takedown request initiated for ${input.violationType} violation on ${input.platform}"
+      level: info
+      data:
+        platform: "${input.platform}"
+        violationType: "${input.violationType}"
+        contentId: "${input.targetContent.contentId}"
+        urgency: "${input.urgency}"
+
+  # Step 2: Validate the request
+  - id: validateRequest
+    name: Validate Takedown Request
+    type: validation
+    dependsOn: logStart
+    config:
+      rules:
+        - field: "${input.targetContent.contentId}"
+          type: required
+          message: "Content ID is required for takedown requests"
+        - field: "${input.evidence.description}"
+          type: required
+          message: "Evidence description is required"
+        - field: "${input.reportingAccountId}"
+          type: required
+          message: "Reporting account ID is required"
+      stopOnFirstError: false
+
+  # Step 3: Check for duplicate reports
+  - id: checkDuplicate
+    name: Check for Duplicate Reports
+    type: custom
+    dependsOn: validateRequest
+    description: Query database for existing takedown requests for the same content
+    config:
+      service: socialeyes.SocialEyesService@1.0.0
+      method: getPostBySourceId
+      params:
+        platform: "${input.platform}"
+        sourceId: "${input.targetContent.contentId}"
+    outputs:
+      existingReport: "response"
+
+  # Step 4: Route based on duplicate check
+  - id: routeDuplicate
+    name: Route on Duplicate Check
+    type: conditional
+    dependsOn: checkDuplicate
+    config:
+      condition: "${step.checkDuplicate.existingReport} !== null && ${step.checkDuplicate.existingReport.metadata.takedownRequested} === true"
+      thenSteps:
+        # Duplicate found — log and link
+        - id: logDuplicate
+          name: Log Duplicate Report
+          type: log
+          config:
+            message: "Duplicate takedown request detected for ${input.platform} content ${input.targetContent.contentId}. Linking to existing record."
+            level: warn
+            data:
+              existingPostId: "${step.checkDuplicate.existingReport.id}"
+              platform: "${input.platform}"
+
+      elseSteps:
+        # Not a duplicate — proceed with full takedown flow
+
+        # Step 4a: Fetch content details from the platform
+        - id: fetchContent
+          name: Fetch Content from Platform
+          type: custom
+          description: Retrieve the violating content details via the platform adapter
+          config:
+            service: socialeyes.SocialEyesService@1.0.0
+            method: getAdapterForAccount
+            params:
+              accountId: "${input.reportingAccountId}"
+          outputs:
+            contentData: "response"
+          continueOnError: true
+
+        # Step 4b: Log evidence summary
+        - id: logEvidence
+          name: Log Evidence Summary
+          type: log
+          dependsOn: fetchContent
+          config:
+            message: "Evidence collected for takedown: ${input.evidence.description}"
+            level: info
+            data:
+              violationType: "${input.violationType}"
+              platform: "${input.platform}"
+              contentId: "${input.targetContent.contentId}"
+              hasScreenshots: "${input.evidence.screenshots !== undefined}"
+
+        # Step 4c: Create the tracking record
+        - id: createRecord
+          name: Create Takedown Tracking Record
+          type: custom
+          dependsOn: logEvidence
+          description: >
+            Store a tracking record in the database. Uses custom step to
+            create or update the post record with takedown metadata.
+          config:
+            service: socialeyes.SocialEyesService@1.0.0
+            method: getPost
+            params:
+              id: "${input.targetContent.contentId}"
+          outputs:
+            trackingId: "id"
+            status: "submitted"
+
+        # Step 4d: Log submission confirmation
+        - id: logSubmission
+          name: Log Takedown Submitted
+          type: log
+          dependsOn: createRecord
+          config:
+            message: "Takedown request submitted successfully for ${input.platform} content ${input.targetContent.contentId}"
+            level: info
+            data:
+              violationType: "${input.violationType}"
+              urgency: "${input.urgency}"
+              contentId: "${input.targetContent.contentId}"
+
+  # Step 5: Final completion log
+  - id: logComplete
+    name: Log Workflow Complete
+    type: log
+    dependsOn: routeDuplicate
+    config:
+      message: "Content takedown workflow completed for ${input.platform} - ${input.violationType}"
+      level: info
+      data:
+        platform: "${input.platform}"
+        violationType: "${input.violationType}"
+        urgency: "${input.urgency}"

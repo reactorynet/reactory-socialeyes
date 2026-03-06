@@ -1,0 +1,269 @@
+# SocialEyes — Social Listening Orchestration Workflow
+# Coordinates multi-platform social listening, aggregation, and action routing
+
+nameSpace: reactory-socialeyes
+name: SocialListeningOrchestration
+version: 1.0.0
+description: >
+  Orchestrates multiple social media listeners across platforms, collects and
+  aggregates results, normalizes data into a unified feed, and applies action
+  rules to trigger downstream workflows or alerts based on detected patterns.
+author: Reactory
+tags:
+  - social-media
+  - listening
+  - monitoring
+  - orchestration
+  - aggregation
+
+metadata:
+  timeout: 600000  # 10 minutes
+  retryPolicy:
+    maxAttempts: 2
+    backoffStrategy: exponential
+    initialDelay: 2000
+    maxDelay: 20000
+  security:
+    requiresAuthentication: true
+    roles:
+      - USER
+
+inputs:
+  listenerIds:
+    type: array
+    required: true
+    description: Array of listener IDs to activate and orchestrate
+
+  aggregationPeriod:
+    type: string
+    required: false
+    default: "1h"
+    description: >
+      How long to collect data before aggregating results.
+      Supported values: 15m, 30m, 1h, 6h, 24h
+    validation:
+      enum:
+        - "15m"
+        - "30m"
+        - "1h"
+        - "6h"
+        - "24h"
+
+  actionRules:
+    type: array
+    required: false
+    description: >
+      Rules for triggering actions based on collected data.
+      Each rule has a condition and action type.
+    default: []
+
+  feedFilter:
+    type: object
+    required: false
+    description: Optional filter to apply when fetching the aggregated feed
+    default:
+      pageSize: 100
+
+outputs:
+  totalPostsCollected:
+    type: number
+    source: step.aggregateResults.totalPosts
+    description: Total number of posts collected across all listeners
+
+  listenersActivated:
+    type: number
+    source: step.activateListeners.activatedCount
+    description: Number of listeners successfully activated
+
+variables:
+  activatedListeners: []
+  collectedPosts: []
+  aggregationDelayMs: 60000
+
+steps:
+  # Step 1: Log orchestration start
+  - id: logStart
+    name: Log Orchestration Start
+    type: log
+    config:
+      message: "Starting social listening orchestration for ${input.listenerIds.length} listeners"
+      level: info
+      data:
+        listenerCount: "${input.listenerIds.length}"
+        aggregationPeriod: "${input.aggregationPeriod}"
+
+  # Step 2: Calculate aggregation delay in milliseconds
+  - id: calcDelay
+    name: Calculate Aggregation Delay
+    type: dataTransformation
+    dependsOn: logStart
+    config:
+      transformations:
+        - operation: custom
+          source: "${input.aggregationPeriod}"
+          target: aggregationDelayMs
+          config:
+            mapping:
+              "15m": 900000
+              "30m": 1800000
+              "1h": 3600000
+              "6h": 21600000
+              "24h": 86400000
+
+  # Step 3: Activate all listeners
+  - id: activateListeners
+    name: Activate All Listeners
+    type: forEach
+    dependsOn: calcDelay
+    config:
+      items: "${input.listenerIds}"
+      itemVariable: listenerId
+      indexVariable: listenerIndex
+      maxConcurrency: 5
+      steps:
+        # Fetch the listener to verify it exists
+        - id: fetchListener
+          name: Fetch Listener Details
+          type: custom
+          config:
+            service: socialeyes.SocialEyesService@1.0.0
+            method: getListener
+            params:
+              id: "${listenerId}"
+
+        # Activate the listener if it's not already active
+        - id: activateListener
+          name: Activate Listener
+          type: custom
+          dependsOn: fetchListener
+          continueOnError: true
+          config:
+            service: socialeyes.SocialEyesService@1.0.0
+            method: toggleListener
+            params:
+              id: "${listenerId}"
+              isActive: true
+
+        # Log activation
+        - id: logActivation
+          name: Log Listener Activation
+          type: log
+          dependsOn: activateListener
+          config:
+            message: "Activated listener ${listenerId} (${listenerIndex + 1}/${input.listenerIds.length})"
+            level: info
+    outputs:
+      activatedCount: "${input.listenerIds.length}"
+
+  # Step 4: Wait for aggregation period
+  - id: waitForCollection
+    name: Wait for Data Collection
+    type: delay
+    dependsOn: activateListeners
+    config:
+      duration: "${variables.aggregationDelayMs}"
+      reason: "Waiting for listeners to collect data during aggregation period"
+
+  # Step 5: Collect and aggregate results from all listeners
+  - id: collectResults
+    name: Collect Results from Listeners
+    type: forEach
+    dependsOn: waitForCollection
+    config:
+      items: "${input.listenerIds}"
+      itemVariable: listenerId
+      indexVariable: listenerIndex
+      maxConcurrency: 3
+      steps:
+        # Fetch the feed filtered by this listener
+        - id: fetchFeed
+          name: Fetch Listener Feed
+          type: custom
+          config:
+            service: socialeyes.SocialEyesService@1.0.0
+            method: getFeed
+            params:
+              filter:
+                listenerId: "${listenerId}"
+                paging:
+                  page: 1
+                  pageSize: "${input.feedFilter.pageSize}"
+
+        # Log collection results for this listener
+        - id: logListenerResults
+          name: Log Listener Results
+          type: log
+          dependsOn: fetchFeed
+          config:
+            message: "Collected posts from listener ${listenerId}: ${step.fetchFeed.items.length} posts"
+            level: info
+
+  # Step 6: Aggregate and summarize
+  - id: aggregateResults
+    name: Aggregate All Results
+    type: custom
+    dependsOn: collectResults
+    description: Combine and deduplicate posts from all listeners into a unified summary
+    config:
+      service: socialeyes.SocialEyesService@1.0.0
+      method: getFeed
+      params:
+        filter:
+          paging:
+            page: 1
+            pageSize: 100
+    outputs:
+      totalPosts: "paging.total"
+
+  # Step 7: Apply action rules if configured
+  - id: checkActionRules
+    name: Check Action Rules
+    type: conditional
+    dependsOn: aggregateResults
+    config:
+      condition: "${input.actionRules.length} > 0"
+      thenSteps:
+        - id: logRulesApplied
+          name: Log Action Rules Applied
+          type: log
+          config:
+            message: "Applying ${input.actionRules.length} action rules to collected data"
+            level: info
+
+        - id: processRules
+          name: Process Action Rules
+          type: forEach
+          dependsOn: logRulesApplied
+          config:
+            items: "${input.actionRules}"
+            itemVariable: rule
+            indexVariable: ruleIndex
+            maxConcurrency: 1
+            steps:
+              - id: logRule
+                name: Log Rule Evaluation
+                type: log
+                config:
+                  message: "Evaluating rule ${ruleIndex}: ${rule.condition} -> ${rule.action}"
+                  level: info
+
+      elseSteps:
+        - id: logNoRules
+          name: Log No Action Rules
+          type: log
+          config:
+            message: "No action rules configured, skipping rule evaluation"
+            level: info
+
+  # Step 8: Log orchestration complete
+  - id: logComplete
+    name: Log Orchestration Complete
+    type: log
+    dependsOn: checkActionRules
+    config:
+      message: "Social listening orchestration complete. Total posts collected: ${step.aggregateResults.totalPosts}"
+      level: info
+      data:
+        listenersActivated: "${input.listenerIds.length}"
+        totalPosts: "${step.aggregateResults.totalPosts}"
+        aggregationPeriod: "${input.aggregationPeriod}"

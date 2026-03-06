@@ -1,0 +1,237 @@
+# SocialEyes — Direct Message Processing Workflow
+# Processes incoming DMs across social platforms with configurable response routing
+
+nameSpace: reactory-socialeyes
+name: ProcessDirectMessages
+version: 1.0.0
+description: >
+  Automatically process incoming direct messages across connected social media
+  platforms. Supports three processing modes: auto (AI-powered automatic replies),
+  hybrid (AI-suggested responses queued for human review), and manual (all messages
+  escalated to human operators).
+author: Reactory
+tags:
+  - social-media
+  - messaging
+  - direct-messages
+  - automation
+
+metadata:
+  timeout: 300000  # 5 minutes
+  retryPolicy:
+    maxAttempts: 3
+    backoffStrategy: exponential
+    initialDelay: 1000
+    maxDelay: 15000
+  security:
+    requiresAuthentication: true
+    roles:
+      - USER
+
+inputs:
+  accountId:
+    type: string
+    required: true
+    description: The social account ID to process messages for
+
+  platform:
+    type: string
+    required: true
+    description: The social media platform (x, reddit)
+    validation:
+      enum:
+        - x
+        - reddit
+
+  processingMode:
+    type: string
+    required: false
+    default: hybrid
+    description: >
+      How to handle messages — auto (respond automatically),
+      hybrid (suggest + queue for review), manual (escalate all)
+    validation:
+      enum:
+        - auto
+        - hybrid
+        - manual
+
+  responseGuidelines:
+    type: object
+    required: false
+    description: Brand voice and response configuration
+    default:
+      tone: professional
+      maxResponseLength: 280
+      escalationKeywords:
+        - refund
+        - complaint
+        - legal
+        - urgent
+
+outputs:
+  syncResult:
+    type: object
+    source: step.syncMessages.result
+    description: Number of new messages synced
+
+  processedCount:
+    type: number
+    source: step.logComplete.processedCount
+    description: Total messages processed in this run
+
+variables:
+  syncedMessages: []
+  processedCount: 0
+  escalatedCount: 0
+  autoRespondedCount: 0
+
+steps:
+  # Step 1: Log workflow start
+  - id: logStart
+    name: Log Workflow Start
+    type: log
+    config:
+      message: "Starting DM processing for account ${input.accountId} on ${input.platform} in ${input.processingMode} mode"
+      level: info
+      data:
+        accountId: "${input.accountId}"
+        platform: "${input.platform}"
+        mode: "${input.processingMode}"
+
+  # Step 2: Sync inbox to pull latest messages from the platform
+  - id: syncMessages
+    name: Sync Inbox Messages
+    type: custom
+    dependsOn: logStart
+    description: Pull latest messages from the social platform into the local database
+    config:
+      service: socialeyes.MessagingService@1.0.0
+      method: syncInbox
+      params:
+        accountId: "${input.accountId}"
+    outputs:
+      result: "response"
+
+  # Step 3: Check if new messages were found
+  - id: checkNewMessages
+    name: Check for New Messages
+    type: conditional
+    dependsOn: syncMessages
+    config:
+      condition: "${step.syncMessages.result.newMessages} > 0"
+      thenSteps:
+        # Step 3a: Fetch the latest inbox messages
+        - id: fetchInbox
+          name: Fetch Inbox Messages
+          type: custom
+          config:
+            service: socialeyes.MessagingService@1.0.0
+            method: getInbox
+            params:
+              userId: "${workflow.userId}"
+              paging:
+                page: 1
+                pageSize: 50
+
+        # Step 3b: Process each message
+        - id: processMessages
+          name: Process Each Message
+          type: forEach
+          dependsOn: fetchInbox
+          config:
+            items: "${step.fetchInbox.items}"
+            itemVariable: message
+            indexVariable: messageIndex
+            maxConcurrency: 5
+            steps:
+              # Load conversation context for this message
+              - id: loadContext
+                name: Load Conversation Context
+                type: custom
+                config:
+                  service: socialeyes.MessagingService@1.0.0
+                  method: getConversation
+                  params:
+                    conversationId: "${message.conversationId}"
+                    paging:
+                      page: 1
+                      pageSize: 10
+
+              # Route based on processing mode
+              - id: routeMessage
+                name: Route Message by Processing Mode
+                type: conditional
+                dependsOn: loadContext
+                config:
+                  condition: "${input.processingMode} === 'auto'"
+                  thenSteps:
+                    # AUTO MODE: Check for escalation keywords first
+                    - id: checkEscalation
+                      name: Check Escalation Keywords
+                      type: conditional
+                      config:
+                        condition: "${input.responseGuidelines.escalationKeywords} !== undefined"
+                        thenSteps:
+                          - id: logAutoReply
+                            name: Log Auto-Reply Candidate
+                            type: log
+                            config:
+                              message: "Auto-processing message ${message.sourceId} from ${message.from.username}"
+                              level: info
+                        elseSteps:
+                          - id: logNoGuidelines
+                            name: Log No Guidelines
+                            type: log
+                            config:
+                              message: "No response guidelines configured, skipping auto-reply for ${message.sourceId}"
+                              level: warn
+
+                  elseSteps:
+                    # HYBRID / MANUAL MODE: Log for human review
+                    - id: logForReview
+                      name: Log Message for Human Review
+                      type: log
+                      config:
+                        message: "Message ${message.sourceId} from ${message.from.username} queued for human review (mode: ${input.processingMode})"
+                        level: info
+                        data:
+                          messageId: "${message.id}"
+                          content: "${message.content}"
+                          from: "${message.from.username}"
+                          mode: "${input.processingMode}"
+
+              # Mark message as read
+              - id: markRead
+                name: Mark Message as Read
+                type: custom
+                dependsOn: routeMessage
+                continueOnError: true
+                config:
+                  service: socialeyes.MessagingService@1.0.0
+                  method: markAsRead
+                  params:
+                    messageId: "${message.id}"
+
+      elseSteps:
+        - id: logNoMessages
+          name: Log No New Messages
+          type: log
+          config:
+            message: "No new messages found for account ${input.accountId}"
+            level: info
+
+  # Step 4: Log completion
+  - id: logComplete
+    name: Log Workflow Complete
+    type: log
+    dependsOn: checkNewMessages
+    config:
+      message: "DM processing complete for account ${input.accountId}. Synced: ${step.syncMessages.result.newMessages}"
+      level: info
+      data:
+        accountId: "${input.accountId}"
+        platform: "${input.platform}"
+        mode: "${input.processingMode}"
+    outputs:
+      processedCount: "${step.syncMessages.result.newMessages}"

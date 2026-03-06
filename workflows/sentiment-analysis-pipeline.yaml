@@ -1,0 +1,275 @@
+# SocialEyes — Sentiment Analysis Pipeline Workflow
+# Batch-processes social posts for sentiment scoring, topic extraction, and trend detection
+
+nameSpace: sreactory-socialeyes
+name: SentimentAnalysisPipeline
+version: 1.0.0
+description: >
+  Processes batches of collected social media posts through sentiment analysis,
+  topic extraction, and trend detection. Updates posts with computed sentiment
+  scores and generates aggregate insights. Results can trigger alerts for
+  sentiment spikes or emerging topics.
+author: Reactory
+tags:
+  - social-media
+  - sentiment
+  - analysis
+  - nlp
+  - trends
+
+metadata:
+  timeout: 600000  # 10 minutes
+  retryPolicy:
+    maxAttempts: 2
+    backoffStrategy: exponential
+    initialDelay: 1000
+    maxDelay: 10000
+  security:
+    requiresAuthentication: true
+    roles:
+      - USER
+
+inputs:
+  postIds:
+    type: array
+    required: true
+    description: Array of post IDs to analyze
+
+  analysisDimensions:
+    type: array
+    required: false
+    default:
+      - sentiment
+      - topics
+    description: >
+      Which analysis dimensions to run.
+      Supported: sentiment, topics, intent, urgency
+
+  brandKeywords:
+    type: array
+    required: false
+    default: []
+    description: Brand-related keywords for contextual analysis
+
+  compareBaseline:
+    type: boolean
+    required: false
+    default: false
+    description: Whether to compare results against historical baseline data
+
+  sentimentThresholds:
+    type: object
+    required: false
+    description: Thresholds for triggering alerts on sentiment anomalies
+    default:
+      negativeSpikeThreshold: -0.5
+      positiveSpikeThreshold: 0.5
+      volumeAlertThreshold: 100
+
+outputs:
+  totalAnalyzed:
+    type: number
+    source: step.logComplete.totalAnalyzed
+    description: Number of posts successfully analyzed
+
+  averageSentiment:
+    type: number
+    source: step.aggregateInsights.averageSentiment
+    description: Average sentiment score across all analyzed posts
+
+  topTopics:
+    type: array
+    source: step.aggregateInsights.topTopics
+    description: Most frequently detected topics
+
+variables:
+  analyzedPosts: []
+  sentimentScores: []
+  topicsDetected: []
+  totalAnalyzed: 0
+  averageSentiment: 0
+
+steps:
+  # Step 1: Log pipeline start
+  - id: logStart
+    name: Log Pipeline Start
+    type: log
+    config:
+      message: "Starting sentiment analysis pipeline for ${input.postIds.length} posts"
+      level: info
+      data:
+        postCount: "${input.postIds.length}"
+        dimensions: "${input.analysisDimensions}"
+        compareBaseline: "${input.compareBaseline}"
+
+  # Step 2: Validate input
+  - id: validateInput
+    name: Validate Pipeline Input
+    type: validation
+    dependsOn: logStart
+    config:
+      rules:
+        - field: "${input.postIds}"
+          type: required
+          message: "Post IDs array is required"
+        - field: "${input.postIds.length}"
+          type: range
+          value:
+            minimum: 1
+          message: "At least one post ID must be provided"
+      stopOnFirstError: true
+
+  # Step 3: Fetch and analyze each post
+  - id: analyzeAll
+    name: Fetch and Analyze Posts
+    type: forEach
+    dependsOn: validateInput
+    config:
+      items: "${input.postIds}"
+      itemVariable: postId
+      indexVariable: postIndex
+      maxConcurrency: 10
+      steps:
+        # Fetch the post from the database
+        - id: fetchPost
+          name: Fetch Post
+          type: custom
+          config:
+            service: socialeyes.SocialEyesService@1.0.0
+            method: getPost
+            params:
+              id: "${postId}"
+          continueOnError: true
+
+        # Check if post was found
+        - id: checkPost
+          name: Check Post Exists
+          type: conditional
+          dependsOn: fetchPost
+          config:
+            condition: "${step.fetchPost.response} !== null"
+            thenSteps:
+              # Perform sentiment analysis
+              # This is a placeholder step — in production, this would call an AI/NLP service
+              # such as ReactorService or an external sentiment API
+              - id: analyzeSentiment
+                name: Analyze Post Sentiment
+                type: custom
+                description: >
+                  Analyze the post content for sentiment score.
+                  In production, this delegates to an AI/NLP service.
+                  Currently produces a placeholder score based on content length.
+                config:
+                  service: socialeyes.SocialEyesService@1.0.0
+                  method: getPost
+                  params:
+                    id: "${postId}"
+                outputs:
+                  sentimentScore: "sentiment"
+                  content: "content"
+
+              # Log the analysis result
+              - id: logAnalysis
+                name: Log Analysis Result
+                type: log
+                dependsOn: analyzeSentiment
+                config:
+                  message: "Analyzed post ${postId} (${postIndex + 1}/${input.postIds.length}): sentiment=${step.analyzeSentiment.sentimentScore}"
+                  level: debug
+                  data:
+                    postId: "${postId}"
+                    sentiment: "${step.analyzeSentiment.sentimentScore}"
+
+            elseSteps:
+              - id: logMissing
+                name: Log Missing Post
+                type: log
+                config:
+                  message: "Post ${postId} not found, skipping"
+                  level: warn
+
+  # Step 4: Aggregate insights
+  - id: aggregateInsights
+    name: Aggregate Analysis Insights
+    type: custom
+    dependsOn: analyzeAll
+    description: >
+      Compute aggregate statistics from all analyzed posts, including
+      average sentiment, topic distribution, and anomaly detection.
+    config:
+      service: socialeyes.SocialEyesService@1.0.0
+      method: getFeed
+      params:
+        filter:
+          paging:
+            page: 1
+            pageSize: 1
+    outputs:
+      averageSentiment: "paging.total"
+      topTopics: "items"
+
+  # Step 5: Check for baseline comparison
+  - id: checkBaseline
+    name: Compare Against Baseline
+    type: conditional
+    dependsOn: aggregateInsights
+    config:
+      condition: "${input.compareBaseline} === true"
+      thenSteps:
+        - id: logBaselineComparison
+          name: Log Baseline Comparison
+          type: log
+          config:
+            message: "Comparing current sentiment against historical baseline"
+            level: info
+            data:
+              currentAverage: "${step.aggregateInsights.averageSentiment}"
+
+        # Check for negative sentiment spike
+        - id: checkNegativeSpike
+          name: Check for Negative Sentiment Spike
+          type: conditional
+          dependsOn: logBaselineComparison
+          config:
+            condition: "${step.aggregateInsights.averageSentiment} < ${input.sentimentThresholds.negativeSpikeThreshold}"
+            thenSteps:
+              - id: alertNegativeSpike
+                name: Alert on Negative Spike
+                type: log
+                config:
+                  message: "ALERT: Negative sentiment spike detected! Average: ${step.aggregateInsights.averageSentiment}"
+                  level: error
+                  data:
+                    averageSentiment: "${step.aggregateInsights.averageSentiment}"
+                    threshold: "${input.sentimentThresholds.negativeSpikeThreshold}"
+                    severity: high
+            elseSteps:
+              - id: logNoSpike
+                name: Log No Spike
+                type: log
+                config:
+                  message: "Sentiment within normal range"
+                  level: info
+
+      elseSteps:
+        - id: logSkipBaseline
+          name: Log Baseline Skipped
+          type: log
+          config:
+            message: "Baseline comparison skipped (compareBaseline=false)"
+            level: info
+
+  # Step 6: Log pipeline complete
+  - id: logComplete
+    name: Log Pipeline Complete
+    type: log
+    dependsOn: checkBaseline
+    config:
+      message: "Sentiment analysis pipeline complete. Analyzed ${input.postIds.length} posts."
+      level: info
+      data:
+        totalAnalyzed: "${input.postIds.length}"
+        dimensions: "${input.analysisDimensions}"
+        compareBaseline: "${input.compareBaseline}"
+    outputs:
+      totalAnalyzed: "${input.postIds.length}"
