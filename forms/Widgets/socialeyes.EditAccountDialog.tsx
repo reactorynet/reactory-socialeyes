@@ -1,13 +1,14 @@
 import Reactory from '@reactorynet/reactory-core';
 
-interface ConnectAccountDialogDependencies {
+interface EditAccountDialogDependencies {
   React: Reactory.React;
   Material: Reactory.Client.Web.IMaterialModule;
 }
 
-interface ConnectAccountDialogProps {
+interface EditAccountDialogProps {
   reactory: Reactory.Client.IReactoryApi;
   open: boolean;
+  account: any;
   onComplete: (account?: any) => void;
   onCancel: () => void;
 }
@@ -17,13 +18,16 @@ const PLATFORMS = [
   { value: 'reddit', label: 'Reddit', icon: 'forum', color: '#FF4500' },
 ];
 
-const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
-  const { reactory, open, onComplete, onCancel } = props;
+/** Strip leading @ or u/ from a handle to get a bare username */
+const stripHandle = (name: string) => name.replace(/^[@]|^u\//, '').trim();
+
+const EditAccountDialog = (props: EditAccountDialogProps) => {
+  const { reactory, open, account, onComplete, onCancel } = props;
 
   const {
     React,
     Material,
-  } = reactory.getComponents<ConnectAccountDialogDependencies>([
+  } = reactory.getComponents<EditAccountDialogDependencies>([
     'react.React',
     'material-ui.Material',
   ]);
@@ -44,7 +48,6 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
     Step,
     StepLabel,
     Icon,
-    MenuItem,
     Chip,
     IconButton,
     Avatar,
@@ -59,23 +62,43 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
   const [success, setSuccess] = React.useState(false);
 
   const [formData, setFormData] = React.useState({
-    platform: '',
-    accessToken: '',
-    refreshToken: '',
-    providerAccountId: '',
-    name: '',
-    email: '',
-    scopes: [] as string[],
+    platform: account?.provider || '',
+    accessToken: account?.accessToken || '',
+    refreshToken: account?.refreshToken || '',
+    providerAccountId: account?.providerAccountId || '',
+    name: account?.name || '',
+    email: account?.email || '',
+    scopes: account?.scopes ? [...account.scopes] : [] as string[],
   });
 
   const [scopeInput, setScopeInput] = React.useState('');
-
-  const [lookupUsername, setLookupUsername] = React.useState('');
+  const [lookupUsername, setLookupUsername] = React.useState(stripHandle(account?.name || ''));
   const [lookupLoading, setLookupLoading] = React.useState(false);
   const [lookupResult, setLookupResult] = React.useState<any>(null);
   const [lookupError, setLookupError] = React.useState<string | null>(null);
 
-  const steps = ['Select Platform', 'Account Details', 'Credentials'];
+  // Reset form when account prop changes or dialog opens
+  React.useEffect(() => {
+    if (open && account) {
+      setFormData({
+        platform: account.provider || '',
+        accessToken: account.accessToken || '',
+        refreshToken: account.refreshToken || '',
+        providerAccountId: account.providerAccountId || '',
+        name: account.name || '',
+        email: account.email || '',
+        scopes: account.scopes ? [...account.scopes] : [],
+      });
+      setActiveStep(0);
+      setError(null);
+      setSuccess(false);
+      setLookupUsername(stripHandle(account.name || ''));
+      setLookupResult(null);
+      setLookupError(null);
+    }
+  }, [open, account]);
+
+  const steps = ['Account Details', 'Credentials'];
 
   const updateField = (field: string, value: any) => {
     setFormData((prev: any) => ({ ...prev, [field]: value }));
@@ -122,15 +145,14 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
       if (found) {
         setLookupResult(found);
         updateField('providerAccountId', found.id);
-        if (!formData.name) {
-          const handle = formData.platform === 'reddit' ? `u/${found.username}` : `@${found.username}`;
-          updateField('name', handle);
-        }
+        // Update display name to match the platform convention
+        const handle = formData.platform === 'reddit' ? `u/${found.username}` : `@${found.username}`;
+        updateField('name', handle);
       } else {
-        setLookupError('Account not found. Please enter the Platform Account ID manually.');
+        setLookupError('Account not found. Please verify the username or update the Platform Account ID manually.');
       }
     } catch (err: any) {
-      setLookupError('Lookup failed. Please enter the Platform Account ID manually.');
+      setLookupError('Lookup failed. Please update the Platform Account ID manually.');
     } finally {
       setLookupLoading(false);
     }
@@ -139,10 +161,8 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
   const canAdvance = () => {
     switch (activeStep) {
       case 0:
-        return !!formData.platform;
-      case 1:
         return !!formData.providerAccountId && !!formData.name;
-      case 2:
+      case 1:
         return !!formData.accessToken;
       default:
         return false;
@@ -206,90 +226,33 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
       setSuccess(true);
       setSubmitting(false);
 
-      // Brief delay so the user sees success, then close
       setTimeout(() => {
         onComplete(result.data?.socialEyesConnectAccount);
       }, 1200);
     } catch (err: any) {
-      setError(err.message || 'Failed to connect account');
+      setError(err.message || 'Failed to update account');
       setSubmitting(false);
     }
   };
 
   const handleClose = () => {
     if (!submitting) {
-      setActiveStep(0);
-      setFormData({
-        platform: '',
-        accessToken: '',
-        refreshToken: '',
-        providerAccountId: '',
-        name: '',
-        email: '',
-        scopes: [],
-      });
-      setError(null);
-      setSuccess(false);
-      setLookupUsername('');
-      setLookupResult(null);
-      setLookupError(null);
       onCancel();
     }
   };
 
   const selectedPlatform = PLATFORMS.find((p) => p.value === formData.platform);
 
-  // ─── Step Content Renderers ───
-
-  const renderPlatformStep = () => (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 2 }}>
-      <Typography variant="body2" color="text.secondary">
-        Select the social media platform you want to connect.
-      </Typography>
-      <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center', mt: 1 }}>
-        {PLATFORMS.map((platform) => {
-          const isSelected = formData.platform === platform.value;
-          return (
-            <Box
-              key={platform.value}
-              onClick={() => updateField('platform', platform.value)}
-              sx={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: 1,
-                p: 3,
-                borderRadius: 2,
-                border: isSelected ? '2px solid' : '1px solid',
-                borderColor: isSelected ? 'primary.main' : 'divider',
-                backgroundColor: isSelected ? 'action.selected' : 'background.paper',
-                cursor: 'pointer',
-                minWidth: 140,
-                transition: 'all 0.2s',
-                '&:hover': {
-                  borderColor: 'primary.light',
-                  backgroundColor: 'action.hover',
-                },
-              }}
-            >
-              <Icon sx={{ fontSize: 40, color: platform.color }}>
-                {platform.icon}
-              </Icon>
-              <Typography variant="subtitle1" fontWeight={isSelected ? 700 : 400}>
-                {platform.label}
-              </Typography>
-            </Box>
-          );
-        })}
-      </Box>
-    </Box>
-  );
-
   const renderDetailsStep = () => (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 2 }}>
-      <Typography variant="body2" color="text.secondary">
-        Enter the account details for your {selectedPlatform?.label || ''} account.
-      </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+        <Icon sx={{ color: selectedPlatform?.color || '#757575' }}>
+          {selectedPlatform?.icon || 'public'}
+        </Icon>
+        <Typography variant="body2" color="text.secondary">
+          Editing {selectedPlatform?.label || ''} account
+        </Typography>
+      </Box>
 
       {/* ── Account Lookup ── */}
       <Box>
@@ -306,7 +269,7 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
             sx={{ flex: 1 }}
             disabled={lookupLoading}
           />
-          <Tooltip title="Look up the account to auto-fill the Platform ID">
+          <Tooltip title="Re-fetch account details from the platform to update the Platform ID">
             <span>
               <Button
                 variant="outlined"
@@ -375,8 +338,8 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
           lookupResult
             ? 'Auto-filled from lookup — you can still edit this manually'
             : formData.platform === 'x'
-            ? 'Your X/Twitter user ID (numeric) — use Look Up to find it automatically'
-            : 'Your Reddit username (without u/) — use Look Up to find it automatically'
+            ? 'Your X/Twitter user ID (numeric)'
+            : 'Your Reddit username (without u/)'
         }
       />
       <TextField
@@ -404,22 +367,8 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
   const renderCredentialsStep = () => (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 2 }}>
       <Typography variant="body2" color="text.secondary">
-        Enter the OAuth credentials for your {selectedPlatform?.label || ''} account.
+        Update the OAuth credentials for your {selectedPlatform?.label || ''} account.
       </Typography>
-
-      {formData.platform === 'x' && (
-        <Alert severity="info" sx={{ mb: 1 }}>
-          You can obtain a Bearer Token from the X Developer Portal under your App's
-          "Keys and tokens" section.
-        </Alert>
-      )}
-
-      {formData.platform === 'reddit' && (
-        <Alert severity="info" sx={{ mb: 1 }}>
-          Create a Reddit app at reddit.com/prefs/apps to get your credentials.
-          Use the "script" or "web app" type.
-        </Alert>
-      )}
 
       <TextField
         label="Access Token / Bearer Token"
@@ -486,10 +435,8 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
   const renderStepContent = () => {
     switch (activeStep) {
       case 0:
-        return renderPlatformStep();
-      case 1:
         return renderDetailsStep();
-      case 2:
+      case 1:
         return renderCredentialsStep();
       default:
         return null;
@@ -505,8 +452,8 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
       disableEscapeKeyDown={submitting}
     >
       <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <Icon color="primary">add_link</Icon>
-        Connect Social Account
+        <Icon color="primary">edit</Icon>
+        Edit Account
         <Box sx={{ flex: 1 }} />
         <IconButton size="small" onClick={handleClose} disabled={submitting}>
           <Icon>close</Icon>
@@ -530,7 +477,7 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
 
         {success && (
           <Alert severity="success" sx={{ mb: 2 }}>
-            Account connected successfully!
+            Account updated successfully!
           </Alert>
         )}
 
@@ -560,9 +507,9 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
             variant="contained"
             onClick={handleSubmit}
             disabled={!canAdvance() || submitting || success}
-            startIcon={submitting ? <CircularProgress size={18} /> : <Icon>link</Icon>}
+            startIcon={submitting ? <CircularProgress size={18} /> : <Icon>save</Icon>}
           >
-            {submitting ? 'Connecting...' : 'Connect'}
+            {submitting ? 'Saving...' : 'Save Changes'}
           </Button>
         )}
       </DialogActions>
@@ -571,10 +518,10 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
 };
 
 const Definition: any = {
-  name: 'ConnectAccountDialog',
+  name: 'EditAccountDialog',
   nameSpace: 'socialeyes',
   version: '1.0.0',
-  component: ConnectAccountDialog,
+  component: EditAccountDialog,
   roles: ['USER'],
 };
 
@@ -585,7 +532,7 @@ if (window?.reactory?.api) {
     Definition.nameSpace,
     Definition.name,
     Definition.version,
-    ConnectAccountDialog,
+    EditAccountDialog,
     ['SocialEyes', 'Dialog'],
     Definition.roles,
     true,
@@ -595,8 +542,8 @@ if (window?.reactory?.api) {
   //@ts-ignore
   window.reactory.api.amq.raiseReactoryPluginEvent('loaded', {
     componentFqn: `${Definition.nameSpace}.${Definition.name}@${Definition.version}`,
-    component: ConnectAccountDialog,
+    component: EditAccountDialog,
   });
 }
 
-export default ConnectAccountDialog;
+export default EditAccountDialog;

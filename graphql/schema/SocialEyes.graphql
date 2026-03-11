@@ -439,11 +439,69 @@ input SocialEyesAccountFilter {
 
   "Filter by active status"
   isActive: Boolean
+
+  "Search by name or email"
+  search: String
 }
 
 # ─────────────────────────────────────────────
 # RESULT TYPES
 # ─────────────────────────────────────────────
+
+"""
+# Social Account Lookup Result
+Result of looking up a social media account by username or platform ID
+"""
+type SocialEyesAccountLookupResult {
+  "Platform-specific user ID"
+  id: String!
+
+  "Username / handle"
+  username: String!
+
+  "Display name"
+  name: String
+
+  "Avatar / profile image URL"
+  avatar: String
+
+  "User bio or description"
+  bio: String
+
+  "Number of followers"
+  followerCount: Int
+
+  "Number of accounts this user follows"
+  followingCount: Int
+
+  "Total number of posts"
+  postCount: Int
+
+  "Whether the account is verified"
+  verified: Boolean
+
+  "Profile URL on the platform"
+  url: String
+}
+
+"""
+# Account Lookup Input
+Input for looking up a social media account by username or platform ID.
+At least one of username or userId must be provided.
+"""
+input SocialEyesAccountLookupInput {
+  "The platform to look up on"
+  platform: SocialPlatform!
+
+  "Username / handle to look up (without leading @ or u/)"
+  username: String
+
+  "Platform-specific user ID to look up"
+  userId: String
+
+  "Optional access token to use for the lookup. Falls back to server-level bearer token if omitted."
+  accessToken: String
+}
 
 """
 # Inbox Sync Result
@@ -512,6 +570,13 @@ extend type Query {
   Retrieve sent messages for the current user
   """
   socialEyesSentMessages(paging: PagingRequest): SocialEyesPagedMessages!
+
+  """
+  # Lookup Social Account
+  Look up a social media account by username or platform ID without requiring an existing connected account.
+  Returns null if the account is not found or the lookup fails.
+  """
+  socialEyesLookupAccount(input: SocialEyesAccountLookupInput!): SocialEyesAccountLookupResult
 }
 
 # ─────────────────────────────────────────────

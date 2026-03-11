@@ -14,9 +14,9 @@ interface DetailPanelProps {
 }
 
 const AccountDetailPanel = (props: DetailPanelProps) => {
-  const { reactory, account, useCase = 'grid' } = props;
+  const { reactory, account: accountProp, useCase = 'grid' } = props;
 
-  if (!account) {
+  if (!accountProp) {
     return <div>No account data available</div>;
   }
 
@@ -36,6 +36,17 @@ const AccountDetailPanel = (props: DetailPanelProps) => {
   const { Box, Tabs, Tab, Typography, Icon, Chip } = MaterialCore;
 
   const [activeTab, setActiveTab] = React.useState(0);
+  const [account, setAccount] = React.useState(accountProp);
+
+  React.useEffect(() => {
+    setAccount(accountProp);
+  }, [accountProp]);
+
+  const handleAccountUpdated = (updatedAccount: any) => {
+    if (updatedAccount) {
+      setAccount(updatedAccount);
+    }
+  };
 
   const platformColors: Record<string, string> = {
     'x': '#000000',
@@ -126,6 +137,7 @@ const AccountDetailPanel = (props: DetailPanelProps) => {
           <ActiveTabComponent
             account={account}
             reactory={reactory}
+            onAccountUpdated={handleAccountUpdated}
           />
         )}
       </Box>

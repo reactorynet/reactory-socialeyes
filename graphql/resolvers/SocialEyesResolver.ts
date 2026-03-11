@@ -46,6 +46,13 @@ interface SocialEyesSendMessageInput {
     content: string;
 }
 
+interface SocialEyesAccountLookupInput {
+    platform: string;
+    username?: string;
+    userId?: string;
+    accessToken?: string;
+}
+
 interface SocialEyesFeedFilter {
     platform?: string;
     dateFrom?: Date;
@@ -63,6 +70,7 @@ interface SocialEyesListenerFilter {
 interface SocialEyesAccountFilter {
     platform?: string;
     isActive?: boolean;
+    search?: string;
 }
 
 // ─────────────────────────────────────────────
@@ -278,12 +286,41 @@ class SocialEyesResolver {
         }
     }
 
+    /**
+     * Look up a social media account by username or platform ID.
+     * Uses a temporary adapter (no persisted account required).
+     * Returns null if the account is not found or the lookup fails.
+     */
+    @query("socialEyesLookupAccount")
+    @roles(["USER"])
+    async lookupAccount(
+        obj: any,
+        { input }: { input: SocialEyesAccountLookupInput },
+        context: Reactory.Server.IReactoryContext,
+    ) {
+        const svc = getSocialEyesService(context);
+        try {
+            return await svc.lookupAccount(input.platform, {
+                username: input.username,
+                userId: input.userId,
+                accessToken: input.accessToken,
+            });
+        } catch (error) {
+            context.error('Error looking up account', { input, error }, 'SocialEyesResolver.lookupAccount');
+            return null;
+        }
+    }
+
     // ─────────────────────────────────────────────
     // MUTATIONS
     // ─────────────────────────────────────────────
 
     /**
      * Connect a new social media account.
+     * Owner resolution:
+     *   1. If input.email is provided, look up a matching Reactory user via UserService.
+     *      If found, that user becomes the account owner.
+     *   2. Otherwise, the currently authenticated user (context.user) is the owner.
      */
     @mutation("socialEyesConnectAccount")
     @roles(["USER"])
@@ -294,6 +331,32 @@ class SocialEyesResolver {
     ) {
         const svc = getSocialEyesService(context);
         try {
+            // Resolve owner: check if a different user should own this account
+            let ownerId: string = context.user._id.toString();
+
+            if (input.email) {
+                try {
+                    const userService = context.getService<Reactory.Service.IReactoryUserService>(
+                        'core.UserService@1.0.0',
+                    );
+                    const userByEmail = await userService.findUserWithEmail(input.email);
+                    if (userByEmail && userByEmail._id) {
+                        ownerId = userByEmail._id.toString();
+                        context.info(
+                            `Account owner resolved via email lookup: ${input.email} -> ${ownerId}`,
+                            { email: input.email, ownerId },
+                            'SocialEyesResolver.connectAccount',
+                        );
+                    }
+                } catch (lookupError) {
+                    context.warn(
+                        `Could not look up user by email "${input.email}", defaulting to current user`,
+                        { error: lookupError },
+                        'SocialEyesResolver.connectAccount',
+                    );
+                }
+            }
+
             return await svc.connectAccount(input.platform, {
                 accessToken: input.accessToken,
                 refreshToken: input.refreshToken,
@@ -303,7 +366,7 @@ class SocialEyesResolver {
                 email: input.email,
                 avatar: input.avatar,
                 scopes: input.scopes,
-            }, context.user.id);
+            }, ownerId);
         } catch (error) {
             context.error('Error connecting account', { platform: input.platform, error }, 'SocialEyesResolver.connectAccount');
             throw error;
@@ -360,7 +423,7 @@ class SocialEyesResolver {
     ) {
         const svc = getSocialEyesService(context);
         try {
-            return await svc.createListener(input, context.user.id);
+            return await svc.createListener(input, context.user._id.toString());
         } catch (error) {
             context.error('Error creating listener', { input, error }, 'SocialEyesResolver.createListener');
             throw error;

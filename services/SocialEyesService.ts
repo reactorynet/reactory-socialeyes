@@ -1,8 +1,9 @@
+import mongoose from 'mongoose';
 import { service } from '@reactory/server-core/application/decorators';
 import { SocialAccount, ISocialAccountDocument } from '../models/Account';
 import { SocialListener, ISocialListenerDocument } from '../models/Listener';
 import { SocialPost, ISocialPostDocument } from '../models/Post';
-import { ISocialAdapter } from '../adapters/base';
+import { ISocialAdapter, ISocialAccountLookupResult, ISocialAccountLookupOptions } from '../adapters/base';
 import { XAdapter } from '../adapters/x';
 import { RedditAdapter } from '../adapters/reddit';
 
@@ -10,6 +11,7 @@ import { RedditAdapter } from '../adapters/reddit';
 interface AccountFilter {
     platform?: string;
     isActive?: boolean;
+    search?: string;
 }
 
 interface ListenerFilter {
@@ -59,13 +61,14 @@ export default class SocialEyesService implements Reactory.Service.IReactoryServ
     /**
      * Create and return the appropriate adapter for a given platform and account.
      */
-    getAdapter(platform: string, account: ISocialAccountDocument): ISocialAdapter {
+    getAdapter(platform: string, account: ISocialAccountDocument, context?: Reactory.Server.IReactoryContext): ISocialAdapter {
+        const ctx = context || this.context;
         switch (platform.toLowerCase()) {
             case 'x':
             case 'twitter':
-                return new XAdapter({ account }, this.context);
+                return new XAdapter({ account }, ctx);
             case 'reddit':
-                return new RedditAdapter({ account }, this.context);
+                return new RedditAdapter({ account }, ctx);
             default:
                 throw new Error(`Unsupported platform: ${platform}`);
         }
@@ -92,9 +95,17 @@ export default class SocialEyesService implements Reactory.Service.IReactoryServ
      */
     async listAccounts(userId: string, filter?: AccountFilter): Promise<ISocialAccountDocument[]> {
         try {
-            const query: any = { owner: userId };
+            // only filter by owner if the user is not an admin - admins can see all accounts
+            const query: any = { };
+            if (!this.context.hasRole('ADMIN')) {
+                query.owner = userId;
+            }
             if (filter?.platform) query.provider = filter.platform;
             if (filter?.isActive !== undefined) query.isActive = filter.isActive;
+            if (filter?.search) query.$or = [
+                { name: { $regex: filter.search, $options: 'i' } },
+                { email: { $regex: filter.search, $options: 'i' } }
+            ];
 
             const accounts = await SocialAccount.find(query).sort({ createdAt: -1 });
             this.context.debug('Listed accounts', { userId, count: accounts.length }, 'SocialEyesService.listAccounts');
@@ -120,6 +131,12 @@ export default class SocialEyesService implements Reactory.Service.IReactoryServ
     /**
      * Connect a new social media account.
      * Creates the account record and validates credentials via the adapter.
+     *
+     * Owner resolution:
+     *   - If userId is provided it is used as the account owner.
+     *   - If userId is not provided, the current context user is used as fallback.
+     *   - An error is thrown if no owner can be resolved (should never happen
+     *     when called from an authenticated resolver).
      */
     async connectAccount(
         platform: string,
@@ -133,10 +150,17 @@ export default class SocialEyesService implements Reactory.Service.IReactoryServ
             avatar?: string;
             scopes?: string[];
         },
-        userId: string,
+        userId?: string,
     ): Promise<ISocialAccountDocument> {
         try {
-            this.context.info('Connecting social account', { platform, userId }, 'SocialEyesService.connectAccount');
+            // Resolve the owner – prefer explicit userId, fall back to context user
+            const resolvedOwner = userId || this.context?.user?._id?.toString();
+
+            if (!resolvedOwner) {
+                throw new Error('Cannot connect account: no owner could be resolved. Ensure the request is authenticated or an explicit userId is provided.');
+            }
+
+            this.context.info('Connecting social account', { platform, owner: resolvedOwner }, 'SocialEyesService.connectAccount');
 
             // Check for existing account
             let account = await SocialAccount.findOne({
@@ -145,7 +169,7 @@ export default class SocialEyesService implements Reactory.Service.IReactoryServ
             });
 
             if (account) {
-                // Update existing account
+                // Update existing account – also ensure owner is set if it was missing
                 account.accessToken = credentials.accessToken;
                 account.refreshToken = credentials.refreshToken;
                 account.tokenExpiry = credentials.tokenExpiry;
@@ -154,6 +178,9 @@ export default class SocialEyesService implements Reactory.Service.IReactoryServ
                 account.avatar = credentials.avatar;
                 account.scopes = credentials.scopes;
                 account.isActive = true;
+                if (!account.owner) {
+                    account.owner = new mongoose.Types.ObjectId(resolvedOwner);
+                }
                 account.updatedAt = new Date();
                 await account.save();
             } else {
@@ -169,7 +196,7 @@ export default class SocialEyesService implements Reactory.Service.IReactoryServ
                     tokenExpiry: credentials.tokenExpiry,
                     scopes: credentials.scopes,
                     isActive: true,
-                    owner: userId,
+                    owner: new mongoose.Types.ObjectId(resolvedOwner),
                 });
             }
 
@@ -180,6 +207,7 @@ export default class SocialEyesService implements Reactory.Service.IReactoryServ
             this.context.info('Social account connected', {
                 platform,
                 accountId: account._id,
+                owner: resolvedOwner,
             }, 'SocialEyesService.connectAccount');
 
             return account;
@@ -238,6 +266,44 @@ export default class SocialEyesService implements Reactory.Service.IReactoryServ
         } catch (error) {
             this.context.error('Failed to refresh account', { id, error }, 'SocialEyesService.refreshAccount');
             throw error;
+        }
+    }
+
+    /**
+     * Look up a social media account by username or platform ID using the platform adapter.
+     * Creates a temporary, non-persisted account object to initialise the adapter.
+     * If no accessToken is provided the adapter falls back to a server-level bearer token
+     * (e.g. X_BEARER_TOKEN env var) so unauthenticated public profile lookups work.
+     */
+    async lookupAccount(
+        platform: string,
+        options: { username?: string; userId?: string; accessToken?: string },
+    ): Promise<ISocialAccountLookupResult | null> {
+        if (!options.username && !options.userId) {
+            throw new Error('Either username or userId must be provided for account lookup');
+        }
+
+        // Build a minimal temporary account – never saved to the database.
+        const tempAccount = {
+            _id: new mongoose.Types.ObjectId(),
+            provider: platform,
+            accessToken: options.accessToken || '',
+            providerAccountId: '',
+            name: '',
+            isActive: false,
+            owner: new mongoose.Types.ObjectId(),
+        } as unknown as ISocialAccountDocument;
+
+        try {
+            const adapter = this.getAdapter(platform, tempAccount);
+            const lookupOptions: ISocialAccountLookupOptions = {};
+            if (options.username) lookupOptions.username = options.username;
+            if (options.userId) lookupOptions.userId = options.userId;
+
+            return await adapter.lookupAccount(lookupOptions);
+        } catch (error) {
+            this.context.error('Account lookup failed', { platform, options, error }, 'SocialEyesService.lookupAccount');
+            return null;
         }
     }
 

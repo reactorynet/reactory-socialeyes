@@ -38,6 +38,20 @@ const modules: Reactory.Forms.IReactoryFormModule[] = [
     compiler: 'rollup',
     fileType: 'tsx'
   },
+  {
+    compilerOptions: {},
+    id: 'socialeyes.EditAccountDialog@1.0.0',
+    src: fileAsString(path.resolve(__dirname, '../../../Widgets/socialeyes.EditAccountDialog.tsx')),
+    compiler: 'rollup',
+    fileType: 'tsx'
+  },
+  {
+    compilerOptions: {},
+    id: 'socialeyes.CreateListenerDialog@1.0.0',
+    src: fileAsString(path.resolve(__dirname, '../../../Widgets/socialeyes.CreateListenerDialog.tsx')),
+    compiler: 'rollup',
+    fileType: 'tsx'
+  },
 ];
 
 export default modules;

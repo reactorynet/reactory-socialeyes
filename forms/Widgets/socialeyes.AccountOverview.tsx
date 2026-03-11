@@ -1,23 +1,52 @@
 import Reactory from '@reactorynet/reactory-core';
 
+interface AccountOverviewDependencies {
+  React: Reactory.React;
+  Material: Reactory.Client.Web.IMaterialModule;
+  EditAccountDialog: any;
+}
+
 interface AccountOverviewProps {
   reactory: Reactory.Client.IReactoryApi;
   account: any;
+  onAccountUpdated?: (account: any) => void;
 }
 
 const AccountOverview = (props: AccountOverviewProps) => {
-  const { reactory, account } = props;
+  const { reactory, account, onAccountUpdated } = props;
 
-  const { React, Material } = reactory.getComponents<{
-    React: Reactory.React;
-    Material: Reactory.Client.Web.IMaterialModule;
-  }>([
+  const { React, Material, EditAccountDialog } = reactory.getComponents<AccountOverviewDependencies>([
     'react.React',
     'material-ui.Material',
+    'socialeyes.EditAccountDialog',
   ]);
 
   const { MaterialCore } = Material;
-  const { Box, Typography, Chip, Avatar, Divider, List, ListItem, ListItemText, ListItemIcon, Icon } = MaterialCore;
+  const {
+    Box,
+    Typography,
+    Chip,
+    Avatar,
+    Divider,
+    List,
+    ListItem,
+    ListItemText,
+    ListItemIcon,
+    Icon,
+    Button,
+    Dialog,
+    DialogTitle,
+    DialogContent,
+    DialogContentText,
+    DialogActions,
+    Alert,
+    CircularProgress,
+  } = MaterialCore;
+
+  const [editDialogOpen, setEditDialogOpen] = React.useState(false);
+  const [disconnectDialogOpen, setDisconnectDialogOpen] = React.useState(false);
+  const [disconnecting, setDisconnecting] = React.useState(false);
+  const [disconnectError, setDisconnectError] = React.useState<string | null>(null);
 
   const fields = [
     { icon: 'badge', label: 'Platform Account ID', value: account.providerAccountId },
@@ -26,6 +55,55 @@ const AccountOverview = (props: AccountOverviewProps) => {
     { icon: 'event', label: 'Connected', value: account.createdAt ? new Date(account.createdAt).toLocaleString() : 'Unknown' },
     { icon: 'update', label: 'Last Updated', value: account.updatedAt ? new Date(account.updatedAt).toLocaleString() : 'Unknown' },
   ];
+
+  const handleEditComplete = (updatedAccount?: any) => {
+    setEditDialogOpen(false);
+    if (updatedAccount && onAccountUpdated) {
+      onAccountUpdated(updatedAccount);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    setDisconnecting(true);
+    setDisconnectError(null);
+
+    try {
+      const result = await reactory.graphqlMutation(
+        `mutation SocialEyesDisconnectAccount($id: ID!) {
+          socialEyesDisconnectAccount(id: $id) {
+            id
+            provider
+            providerAccountId
+            name
+            email
+            avatar
+            profileUrl
+            isActive
+            scopes
+            createdAt
+            updatedAt
+          }
+        }`,
+        { id: account.id },
+        {},
+      );
+
+      if (result.errors && result.errors.length > 0) {
+        setDisconnectError(result.errors.map((e: any) => e.message).join('; '));
+        setDisconnecting(false);
+        return;
+      }
+
+      setDisconnecting(false);
+      setDisconnectDialogOpen(false);
+      if (onAccountUpdated) {
+        onAccountUpdated(result.data?.socialEyesDisconnectAccount);
+      }
+    } catch (err: any) {
+      setDisconnectError(err.message || 'Failed to disconnect account');
+      setDisconnecting(false);
+    }
+  };
 
   return (
     <Box sx={{ p: 2 }}>
@@ -85,6 +163,78 @@ const AccountOverview = (props: AccountOverviewProps) => {
           </Box>
         </Box>
       )}
+
+      {/* Action Buttons */}
+      <Divider sx={{ my: 2 }} />
+      <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
+        <Button
+          variant="outlined"
+          startIcon={<Icon>edit</Icon>}
+          onClick={() => setEditDialogOpen(true)}
+        >
+          Edit Account
+        </Button>
+        <Button
+          variant="outlined"
+          color="error"
+          startIcon={<Icon>link_off</Icon>}
+          onClick={() => setDisconnectDialogOpen(true)}
+          disabled={!account.isActive}
+        >
+          Disconnect
+        </Button>
+      </Box>
+
+      {/* Edit Account Dialog */}
+      {EditAccountDialog && (
+        <EditAccountDialog
+          reactory={reactory}
+          open={editDialogOpen}
+          account={account}
+          onComplete={handleEditComplete}
+          onCancel={() => setEditDialogOpen(false)}
+        />
+      )}
+
+      {/* Disconnect Confirmation Dialog */}
+      <Dialog
+        open={disconnectDialogOpen}
+        onClose={() => !disconnecting && setDisconnectDialogOpen(false)}
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Icon color="error">warning</Icon>
+          Disconnect {account.name}?
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Are you sure you want to disconnect the {account.provider?.toUpperCase()} account
+            "{account.name}"? This will deactivate the account and stop all listeners
+            associated with it.
+          </DialogContentText>
+          {disconnectError && (
+            <Alert severity="error" sx={{ mt: 2 }}>
+              {disconnectError}
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => setDisconnectDialogOpen(false)}
+            disabled={disconnecting}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleDisconnect}
+            color="error"
+            variant="contained"
+            disabled={disconnecting}
+            startIcon={disconnecting ? <CircularProgress size={18} /> : <Icon>link_off</Icon>}
+          >
+            {disconnecting ? 'Disconnecting...' : 'Disconnect'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

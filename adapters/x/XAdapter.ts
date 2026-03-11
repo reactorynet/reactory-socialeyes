@@ -1,5 +1,5 @@
 import { TwitterApi, TweetV2 } from 'twitter-api-v2';
-import { AbstractSocialAdapter, ISocialSearchResults } from '../base';
+import { AbstractSocialAdapter, ISocialSearchResults, ISocialAccountLookupResult, ISocialAccountLookupOptions } from '../base';
 import { ISocialAccountDocument } from '../../models/Account';
 import { ISocialPost, ISocialPostDocument, SocialPost } from '../../models/Post';
 import { ISocialMessage, ISocialMessageDocument, SocialMessage } from '../../models/Message';
@@ -31,6 +31,7 @@ export class XAdapter extends AbstractSocialAdapter {
     name: string = 'XAdapter';
     description: string = 'X (Twitter) Platform Adapter';
 
+    //@ts-ignore - client is initialized in constructor via initializeClient()
     private client: TwitterApi;
 
     constructor(props: any, context: Reactory.Server.IReactoryContext) {
@@ -267,7 +268,7 @@ export class XAdapter extends AbstractSocialAdapter {
             const post: ISocialPost = {
                 platform: 'x',
                 sourceId: tweet.id,
-                url: `https://twitter.com/i/web/status/${tweet.id}`,
+                url: `https://x.com/i/web/status/${tweet.id}`,
                 author: {
                     id: this.account.providerAccountId,
                     username: this.account.name,
@@ -281,6 +282,69 @@ export class XAdapter extends AbstractSocialAdapter {
         } catch (error) {
             this.context.error('Failed to post to X', { error }, 'XAdapter.postUpdate');
             throw error;
+        }
+    }
+
+    /**
+     * Look up an X user account by username or user ID.
+     * Uses the X API v2 users endpoints.
+     */
+    async lookupAccount(options: ISocialAccountLookupOptions): Promise<ISocialAccountLookupResult | null> {
+        try {
+            if (!options.username && !options.userId) {
+                throw new Error('Either username or userId must be provided for account lookup');
+            }
+
+            const userFields = [
+                'id', 'name', 'username', 'profile_image_url',
+                'description', 'public_metrics', 'verified', 'url',
+                'created_at', 'location', 'pinned_tweet_id',
+            ] as const;
+
+            let userData: any;
+
+            if (options.username) {
+                const username = options.username.replace(/^@/, '');
+                this.context.debug('Looking up X user by username', { username }, 'XAdapter.lookupAccount');
+                const result = await this.client.v2.userByUsername(username, {
+                    'user.fields': userFields.join(','),
+                });
+                userData = result.data;
+            } else {
+                this.context.debug('Looking up X user by ID', { userId: options.userId }, 'XAdapter.lookupAccount');
+                const result = await this.client.v2.user(options.userId!, {
+                    'user.fields': userFields.join(','),
+                });
+                userData = result.data;
+            }
+
+            if (!userData) {
+                this.context.debug('X user not found', { options }, 'XAdapter.lookupAccount');
+                return null;
+            }
+
+            return {
+                id: userData.id,
+                username: userData.username,
+                name: userData.name,
+                avatar: userData.profile_image_url,
+                bio: userData.description,
+                followerCount: userData.public_metrics?.followers_count,
+                followingCount: userData.public_metrics?.following_count,
+                postCount: userData.public_metrics?.tweet_count,
+                verified: userData.verified ?? false,
+                url: `https://x.com/${userData.username}`,
+                metadata: {
+                    location: userData.location,
+                    pinnedTweetId: userData.pinned_tweet_id,
+                    createdAt: userData.created_at,
+                    listedCount: userData.public_metrics?.listed_count,
+                    profileUrl: userData.url,
+                },
+            };
+        } catch (error) {
+            this.context.error('Failed to look up X account', { options, error }, 'XAdapter.lookupAccount');
+            return null;
         }
     }
 
@@ -334,7 +398,7 @@ export class XAdapter extends AbstractSocialAdapter {
         return {
             platform: 'x',
             sourceId: tweet.id,
-            url: `https://twitter.com/i/web/status/${tweet.id}`,
+            url: `https://x.com/${author?.username || 'i'}/status/${tweet.id}`,
             author: {
                 id: tweet.author_id || author?.id || 'unknown',
                 username: author?.username || 'unknown',
