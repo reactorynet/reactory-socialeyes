@@ -6,6 +6,7 @@ import workflows from './workflows';
 import SocialAccounts from './forms/Accounts/SocialAccounts';
 import SocialFeed from './forms/Feed/SocialFeed';
 import SocialMessages from './forms/Messages/SocialMessages';
+import SocialEyesMacros from './ai/macro';
 
 const SocialEyesModule: Reactory.Server.IReactoryModule = {
     id: 'reactory-socialeyes',
@@ -27,6 +28,10 @@ const SocialEyesModule: Reactory.Server.IReactoryModule = {
     pdfs: [],
     grpc: [],
     passportProviders: [],
+    reactor: {        
+        providers: [],
+        macros: SocialEyesMacros,
+    }
 };
 
 export default SocialEyesModule;
