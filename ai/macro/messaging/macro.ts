@@ -196,7 +196,9 @@ To reply, call socialEyesReplyToMessage with the message id and your content.
     };
   } catch (error) {
     logger.error('socialEyesGetInbox error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesInbox', params: props };
+    return { success: false, error: (error as Error).message, tool: 'socialEyesInbox', params: props,
+      instructions: `## Get Inbox — Error\n\nFailed to retrieve inbox: ${(error as Error).message}\n\n### Recovery Options:\n- Retry the request\n- Try a smaller pageSize\n- Verify server connectivity`
+    };
   }
 };
 
@@ -269,6 +271,7 @@ To reply, call socialEyesReplyToMessage with the most recent message id.
       error: (error as Error).message,
       tool: 'socialEyesConversation',
       params: props,
+      instructions: `## Get Conversation — Error\n\nFailed to load conversation: ${(error as Error).message}\n\n### Recovery Options:\n- Verify the conversationId is correct (get it from \`socialEyesInbox\`)\n- Retry the request`
     };
   }
 };
@@ -337,7 +340,9 @@ The message was successfully delivered. To follow up, use the conversationId (${
     };
   } catch (error) {
     logger.error('socialEyesSendMessage error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesSendMessage', params: props };
+    return { success: false, error: (error as Error).message, tool: 'socialEyesSendMessage', params: props,
+      instructions: `## Send Message — Error\n\nFailed to send message: ${(error as Error).message}\n\n### Recovery Options:\n- Verify accountId and recipient are correct\n- Check the account is connected and has messaging permissions\n- Retry the request`
+    };
   }
 };
 
@@ -408,6 +413,7 @@ The conversation thread can be viewed with socialEyesConversation using conversa
       error: (error as Error).message,
       tool: 'socialEyesReplyToMessage',
       params: props,
+      instructions: `## Reply To Message — Error\n\nFailed to reply: ${(error as Error).message}\n\n### Recovery Options:\n- Verify the messageId is correct (get from \`socialEyesConversation\`)\n- Retry the request`
     };
   }
 };
@@ -472,6 +478,7 @@ export const MarkMessageRead: Macro<SocialEyesMacroResult<SocialMessageResult>, 
       error: (error as Error).message,
       tool: 'socialEyesMarkMessageRead',
       params: props,
+      instructions: `## Mark Message Read — Error\n\nFailed to mark message as read: ${(error as Error).message}\n\n### Recovery Options:\n- Verify the message ID is valid\n- Retry the request`
     };
   }
 };
@@ -540,7 +547,9 @@ ${newMessages > 0
     };
   } catch (error) {
     logger.error('socialEyesSyncInbox error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesSyncInbox', params: props };
+    return { success: false, error: (error as Error).message, tool: 'socialEyesSyncInbox', params: props,
+      instructions: `## Sync Inbox — Error\n\nFailed to sync inbox: ${(error as Error).message}\n\n### Recovery Options:\n- Verify the accountId is correct\n- Check the social account is still connected\n- Retry the request`
+    };
   }
 };
 

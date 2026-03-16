@@ -76,7 +76,9 @@ ${listeners.length === 0 ? '\nNo listeners configured. Use socialEyesCreateListe
     };
   } catch (error) {
     logger.error('socialEyesListListeners error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesListeners', params: props };
+    return { success: false, error: (error as Error).message, tool: 'socialEyesListeners', params: props,
+      instructions: `## List Listeners — Error\n\nFailed to list listeners: ${(error as Error).message}\n\n### Recovery Options:\n- Retry the request\n- Verify platform/type filter values are valid\n- Check server connectivity`
+    };
   }
 };
 
@@ -124,7 +126,9 @@ export const GetListener: Macro<SocialEyesMacroResult<SocialListenerResult | nul
   state: ChatState,
 ): Promise<SocialEyesMacroResult<SocialListenerResult | null>> => {
   const { id } = props;
-  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesListener', params: props };
+  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesListener', params: props,
+    instructions: `## Get Listener — Missing Parameter\n\nThe 'id' parameter is required. Use \`socialEyesListeners\` to list all listeners and find the ID.`
+  };
 
   try {
     const result = await queryGraph(GET_LISTENER_QUERY, { id }, {}, state.context);
@@ -140,7 +144,9 @@ export const GetListener: Macro<SocialEyesMacroResult<SocialListenerResult | nul
     };
   } catch (error) {
     logger.error('socialEyesGetListener error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesListener', params: props };
+    return { success: false, error: (error as Error).message, tool: 'socialEyesListener', params: props,
+      instructions: `## Get Listener — Error\n\nFailed to retrieve listener: ${(error as Error).message}\n\n### Recovery Options:\n- Verify the listener ID is valid using \`socialEyesListeners\`\n- Retry the request`
+    };
   }
 };
 
@@ -188,7 +194,9 @@ export const CreateListener: Macro<SocialEyesMacroResult<SocialListenerResult>, 
   const required = ['name', 'platform', 'type', 'query'];
   for (const field of required) {
     if (!(props as any)[field]) {
-      return { success: false, error: `${field} is required`, tool: 'socialEyesCreateListener', params: props };
+      return { success: false, error: `${field} is required`, tool: 'socialEyesCreateListener', params: props,
+        instructions: `## Create Listener — Missing Parameter\n\nRequired field '${field}' is missing. All required fields: name, platform (x/reddit), type (keyword/hashtag/mention/user/group), query.`
+      };
     }
   }
 
@@ -205,7 +213,9 @@ export const CreateListener: Macro<SocialEyesMacroResult<SocialListenerResult>, 
     };
   } catch (error) {
     logger.error('socialEyesCreateListener error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesCreateListener', params: props };
+    return { success: false, error: (error as Error).message, tool: 'socialEyesCreateListener', params: props,
+      instructions: `## Create Listener — Error\n\nFailed to create listener: ${(error as Error).message}\n\n### Recovery Options:\n- Verify all parameters are correct (name, platform, type, query)\n- Check platform is supported (x, reddit)\n- Retry the request`
+    };
   }
 };
 
@@ -257,7 +267,9 @@ export const UpdateListener: Macro<SocialEyesMacroResult<SocialListenerResult>, 
   state: ChatState,
 ): Promise<SocialEyesMacroResult<SocialListenerResult>> => {
   const { id, ...input } = props;
-  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesUpdateListener', params: props };
+  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesUpdateListener', params: props,
+    instructions: `## Update Listener — Missing Parameter\n\nThe 'id' parameter is required. Use \`socialEyesListeners\` to find a listener ID.`
+  };
 
   try {
     const result = await mutateGraph(UPDATE_LISTENER_MUTATION, { id, input }, {}, state.context);
@@ -271,7 +283,9 @@ export const UpdateListener: Macro<SocialEyesMacroResult<SocialListenerResult>, 
     };
   } catch (error) {
     logger.error('socialEyesUpdateListener error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesUpdateListener', params: props };
+    return { success: false, error: (error as Error).message, tool: 'socialEyesUpdateListener', params: props,
+      instructions: `## Update Listener — Error\n\nFailed to update listener: ${(error as Error).message}\n\n### Recovery Options:\n- Verify the listener ID exists using \`socialEyesListener\`\n- Check the fields being updated are valid\n- Retry the request`
+    };
   }
 };
 
@@ -325,7 +339,9 @@ export const DeleteListener: Macro<SocialEyesMacroResult<{ id: string; name: str
   state: ChatState,
 ) => {
   const { id } = props;
-  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesDeleteListener', params: props };
+  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesDeleteListener', params: props,
+    instructions: `## Delete Listener — Missing Parameter\n\nThe 'id' parameter is required. Use \`socialEyesListeners\` to find a listener ID.`
+  };
 
   try {
     const result = await mutateGraph(DELETE_LISTENER_MUTATION, { id }, {}, state.context);
@@ -340,7 +356,9 @@ export const DeleteListener: Macro<SocialEyesMacroResult<{ id: string; name: str
     };
   } catch (error) {
     logger.error('socialEyesDeleteListener error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesDeleteListener', params: props };
+    return { success: false, error: (error as Error).message, tool: 'socialEyesDeleteListener', params: props,
+      instructions: `## Delete Listener — Error\n\nFailed to delete listener: ${(error as Error).message}\n\n### Recovery Options:\n- Verify the listener ID exists using \`socialEyesListener\`\n- Check permissions\n- Retry the request`
+    };
   }
 };
 
@@ -388,8 +406,12 @@ export const ToggleListener: Macro<SocialEyesMacroResult<{ id: string; name: str
   state: ChatState,
 ) => {
   const { id, isActive } = props;
-  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesToggleListener', params: props };
-  if (isActive === undefined) return { success: false, error: 'isActive is required', tool: 'socialEyesToggleListener', params: props };
+  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesToggleListener', params: props,
+    instructions: `## Toggle Listener — Missing Parameter\n\nThe 'id' parameter is required. Use \`socialEyesListeners\` to find a listener ID.`
+  };
+  if (isActive === undefined) return { success: false, error: 'isActive is required', tool: 'socialEyesToggleListener', params: props,
+    instructions: `## Toggle Listener — Missing Parameter\n\nThe 'isActive' parameter is required. Set to true to activate or false to pause.`
+  };
 
   try {
     const result = await mutateGraph(TOGGLE_LISTENER_MUTATION, { id, isActive }, {}, state.context);
@@ -403,7 +425,9 @@ export const ToggleListener: Macro<SocialEyesMacroResult<{ id: string; name: str
     };
   } catch (error) {
     logger.error('socialEyesToggleListener error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesToggleListener', params: props };
+    return { success: false, error: (error as Error).message, tool: 'socialEyesToggleListener', params: props,
+      instructions: `## Toggle Listener — Error\n\nFailed to toggle listener: ${(error as Error).message}\n\n### Recovery Options:\n- Verify the listener ID exists using \`socialEyesListener\`\n- Retry the request`
+    };
   }
 };
 
