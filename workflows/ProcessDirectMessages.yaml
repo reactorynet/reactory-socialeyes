@@ -1,0 +1,825 @@
+nameSpace: reactory-socialeyes
+name: ProcessDirectMessages
+version: 1.0.0
+description: >
+  Automatically process incoming direct messages across connected social media platforms. Supports three processing
+  modes: auto (AI-powered automatic replies), hybrid (AI-suggested responses queued for human review), and manual (all
+  messages escalated to human operators).
+author: Reactory
+tags:
+  - social-media
+  - messaging
+  - direct-messages
+  - automation
+variables: >-
+  [{"id":"xvov5373z","name":"syncedMessages","type":"object","defaultValue":[]},{"id":"2nlqym8lx","name":"processedCount","type":"number","defaultValue":0},{"id":"luinzfzfm","name":"escalatedCount","type":"number","defaultValue":0},{"id":"dg6zekyer","name":"autoRespondedCount","type":"number","defaultValue":0}]
+steps:
+  - id: __start__
+    type: start
+    name: Start
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: '{"name":"Start"}'
+    designer:
+      position:
+        x: -140
+        'y': 0
+      size:
+        width: 120
+        height: 60
+      ports:
+        inputs: []
+        outputs:
+          - name: next
+            label: next
+            position:
+              x: 60
+              'y': 60
+            dataType: null
+  - id: logStart
+    type: log
+    name: Log Workflow Start
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"message":"Starting DM processing for account ${input.accountId} on ${input.platform} in ${input.processingMode}
+      mode","level":"info","data":{"accountId":"${input.accountId}","platform":"${input.platform}","mode":"${input.processingMode}"},"enabled":true,"continueOnError":false,"timeout":null,"condition":null,"inputs":null,"outputs":null}
+    designer:
+      position:
+        x: 360
+        'y': 20
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: data
+            label: data
+            position:
+              x: 0
+              'y': 50
+            dataType: any
+        outputs:
+          - name: next
+            label: next
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+  - id: syncMessages
+    type: service_invoke
+    name: Sync Inbox Messages
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"service":"socialeyes.MessagingService@1.0.0","method":"syncInbox","params":{"accountId":"${input.accountId}"},"enabled":true,"continueOnError":false,"timeout":null,"condition":null,"inputs":null,"outputs":{"result":"response"}}
+    designer:
+      position:
+        x: 380
+        'y': 240
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: params
+            label: params
+            position:
+              x: 0
+              'y': 50
+            dataType: any
+          - name: context
+            label: context
+            position:
+              x: 0
+              'y': 70
+            dataType: object
+        outputs:
+          - name: next
+            label: next
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+          - name: result
+            label: result
+            position:
+              x: 200
+              'y': 50
+            dataType: any
+          - name: error
+            label: error
+            position:
+              x: 200
+              'y': 70
+            dataType: error
+  - id: checkNewMessages
+    type: condition
+    name: Check for New Messages
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"condition":null,"thenSteps":[{"id":"fetchInbox","name":"Fetch Inbox
+      Messages","type":"custom","config":{"service":"socialeyes.MessagingService@1.0.0","method":"getInbox","params":{"userId":"${workflow.userId}","paging":{"page":1,"pageSize":50}}}},{"id":"processMessages","name":"Process
+      Each
+      Message","type":"forEach","dependsOn":"fetchInbox","config":{"items":"${step.fetchInbox.items}","itemVariable":"message","indexVariable":"messageIndex","maxConcurrency":5,"steps":[{"id":"loadContext","name":"Load
+      Conversation
+      Context","type":"custom","config":{"service":"socialeyes.MessagingService@1.0.0","method":"getConversation","params":{"conversationId":"${message.conversationId}","paging":{"page":1,"pageSize":10}}}},{"id":"routeMessage","name":"Route
+      Message by Processing
+      Mode","type":"conditional","dependsOn":"loadContext","config":{"condition":"${input.processingMode} ===
+      'auto'","thenSteps":[{"id":"checkEscalation","name":"Check Escalation
+      Keywords","type":"conditional","config":{"condition":"${input.responseGuidelines.escalationKeywords} !==
+      undefined","thenSteps":[{"id":"logAutoReply","name":"Log Auto-Reply
+      Candidate","type":"log","config":{"message":"Auto-processing message ${message.sourceId} from
+      ${message.from.username}","level":"info"}}],"elseSteps":[{"id":"logNoGuidelines","name":"Log No
+      Guidelines","type":"log","config":{"message":"No response guidelines configured, skipping auto-reply for
+      ${message.sourceId}","level":"warn"}}]}}],"elseSteps":[{"id":"logForReview","name":"Log Message for Human
+      Review","type":"log","config":{"message":"Message ${message.sourceId} from ${message.from.username} queued for
+      human review (mode:
+      ${input.processingMode})","level":"info","data":{"messageId":"${message.id}","content":"${message.content}","from":"${message.from.username}","mode":"${input.processingMode}"}}}]}},{"id":"markRead","name":"Mark
+      Message as
+      Read","type":"custom","dependsOn":"routeMessage","continueOnError":true,"config":{"service":"socialeyes.MessagingService@1.0.0","method":"markAsRead","params":{"messageId":"${message.id}"}}}]}}],"elseSteps":[{"id":"logNoMessages","name":"Log
+      No New Messages","type":"log","config":{"message":"No new messages found for account
+      ${input.accountId}","level":"info"}}],"enabled":true,"continueOnError":false,"timeout":null,"inputs":null,"outputs":null}
+    designer:
+      position:
+        x: -60
+        'y': 360
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: input
+            label: input
+            position:
+              x: 0
+              'y': 50
+            dataType: any
+        outputs:
+          - name: 'true'
+            label: 'true'
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+          - name: 'false'
+            label: 'false'
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+  - id: fetchInbox
+    type: service_invoke
+    name: Fetch Inbox Messages
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"service":"socialeyes.MessagingService@1.0.0","method":"getInbox","params":{"userId":"${workflow.userId}","paging":{"page":1,"pageSize":50}},"enabled":true,"continueOnError":false}
+    designer:
+      position:
+        x: 560
+        'y': 540
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: params
+            label: params
+            position:
+              x: 0
+              'y': 50
+            dataType: any
+          - name: context
+            label: context
+            position:
+              x: 0
+              'y': 70
+            dataType: object
+        outputs:
+          - name: next
+            label: next
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+          - name: result
+            label: result
+            position:
+              x: 200
+              'y': 50
+            dataType: any
+          - name: error
+            label: error
+            position:
+              x: 200
+              'y': 70
+            dataType: error
+  - id: processMessages
+    type: for_each
+    name: Process Each Message
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"items":"${step.fetchInbox.items}","itemVariable":"message","indexVariable":"messageIndex","maxConcurrency":5,"steps":[{"id":"loadContext","name":"Load
+      Conversation
+      Context","type":"custom","config":{"service":"socialeyes.MessagingService@1.0.0","method":"getConversation","params":{"conversationId":"${message.conversationId}","paging":{"page":1,"pageSize":10}}}},{"id":"routeMessage","name":"Route
+      Message by Processing
+      Mode","type":"conditional","dependsOn":"loadContext","config":{"condition":"${input.processingMode} ===
+      'auto'","thenSteps":[{"id":"checkEscalation","name":"Check Escalation
+      Keywords","type":"conditional","config":{"condition":"${input.responseGuidelines.escalationKeywords} !==
+      undefined","thenSteps":[{"id":"logAutoReply","name":"Log Auto-Reply
+      Candidate","type":"log","config":{"message":"Auto-processing message ${message.sourceId} from
+      ${message.from.username}","level":"info"}}],"elseSteps":[{"id":"logNoGuidelines","name":"Log No
+      Guidelines","type":"log","config":{"message":"No response guidelines configured, skipping auto-reply for
+      ${message.sourceId}","level":"warn"}}]}}],"elseSteps":[{"id":"logForReview","name":"Log Message for Human
+      Review","type":"log","config":{"message":"Message ${message.sourceId} from ${message.from.username} queued for
+      human review (mode:
+      ${input.processingMode})","level":"info","data":{"messageId":"${message.id}","content":"${message.content}","from":"${message.from.username}","mode":"${input.processingMode}"}}}]}},{"id":"markRead","name":"Mark
+      Message as
+      Read","type":"custom","dependsOn":"routeMessage","continueOnError":true,"config":{"service":"socialeyes.MessagingService@1.0.0","method":"markAsRead","params":{"messageId":"${message.id}"}}}],"enabled":true,"continueOnError":false}
+    designer:
+      position:
+        x: -180
+        'y': 680
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: items
+            label: items
+            position:
+              x: 0
+              'y': 50
+            dataType: array
+        outputs:
+          - name: loop_body
+            label: loop_body
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+          - name: completed
+            label: completed
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+          - name: item
+            label: item
+            position:
+              x: 200
+              'y': 70
+            dataType: any
+          - name: index
+            label: index
+            position:
+              x: 200
+              'y': 90
+            dataType: number
+  - id: loadContext
+    type: service_invoke
+    name: Load Conversation Context
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"service":"socialeyes.MessagingService@1.0.0","method":"getConversation","params":{"conversationId":"${message.conversationId}","paging":{"page":1,"pageSize":10}},"enabled":true,"continueOnError":false}
+    designer:
+      position:
+        x: 100
+        'y': 850
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: params
+            label: params
+            position:
+              x: 0
+              'y': 50
+            dataType: any
+          - name: context
+            label: context
+            position:
+              x: 0
+              'y': 70
+            dataType: object
+        outputs:
+          - name: next
+            label: next
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+          - name: result
+            label: result
+            position:
+              x: 200
+              'y': 50
+            dataType: any
+          - name: error
+            label: error
+            position:
+              x: 200
+              'y': 70
+            dataType: error
+  - id: routeMessage
+    type: condition
+    name: Route Message by Processing Mode
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"thenSteps":[{"id":"checkEscalation","name":"Check Escalation
+      Keywords","type":"conditional","config":{"condition":"${input.responseGuidelines.escalationKeywords} !==
+      undefined","thenSteps":[{"id":"logAutoReply","name":"Log Auto-Reply
+      Candidate","type":"log","config":{"message":"Auto-processing message ${message.sourceId} from
+      ${message.from.username}","level":"info"}}],"elseSteps":[{"id":"logNoGuidelines","name":"Log No
+      Guidelines","type":"log","config":{"message":"No response guidelines configured, skipping auto-reply for
+      ${message.sourceId}","level":"warn"}}]}}],"elseSteps":[{"id":"logForReview","name":"Log Message for Human
+      Review","type":"log","config":{"message":"Message ${message.sourceId} from ${message.from.username} queued for
+      human review (mode:
+      ${input.processingMode})","level":"info","data":{"messageId":"${message.id}","content":"${message.content}","from":"${message.from.username}","mode":"${input.processingMode}"}}}],"enabled":true,"continueOnError":false}
+    designer:
+      position:
+        x: 100
+        'y': 1000
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: input
+            label: input
+            position:
+              x: 0
+              'y': 50
+            dataType: any
+        outputs:
+          - name: 'true'
+            label: 'true'
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+          - name: 'false'
+            label: 'false'
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+  - id: checkEscalation
+    type: condition
+    name: Check Escalation Keywords
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"thenSteps":[{"id":"logAutoReply","name":"Log Auto-Reply
+      Candidate","type":"log","config":{"message":"Auto-processing message ${message.sourceId} from
+      ${message.from.username}","level":"info"}}],"elseSteps":[{"id":"logNoGuidelines","name":"Log No
+      Guidelines","type":"log","config":{"message":"No response guidelines configured, skipping auto-reply for
+      ${message.sourceId}","level":"warn"}}],"enabled":true,"continueOnError":false}
+    designer:
+      position:
+        x: 100
+        'y': 1150
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: input
+            label: input
+            position:
+              x: 0
+              'y': 50
+            dataType: any
+        outputs:
+          - name: 'true'
+            label: 'true'
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+          - name: 'false'
+            label: 'false'
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+  - id: logAutoReply
+    type: log
+    name: Log Auto-Reply Candidate
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"message":"Auto-processing message ${message.sourceId} from
+      ${message.from.username}","level":"info","enabled":true,"continueOnError":false}
+    designer:
+      position:
+        x: 100
+        'y': 1300
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: data
+            label: data
+            position:
+              x: 0
+              'y': 50
+            dataType: any
+        outputs:
+          - name: next
+            label: next
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+  - id: logNoGuidelines
+    type: log
+    name: Log No Guidelines
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"message":"No response guidelines configured, skipping auto-reply for
+      ${message.sourceId}","level":"warn","enabled":true,"continueOnError":false}
+    designer:
+      position:
+        x: 100
+        'y': 1450
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: data
+            label: data
+            position:
+              x: 0
+              'y': 50
+            dataType: any
+        outputs:
+          - name: next
+            label: next
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+  - id: logForReview
+    type: log
+    name: Log Message for Human Review
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"message":"Message ${message.sourceId} from ${message.from.username} queued for human review (mode:
+      ${input.processingMode})","level":"info","data":{"messageId":"${message.id}","content":"${message.content}","from":"${message.from.username}","mode":"${input.processingMode}"},"enabled":true,"continueOnError":false}
+    designer:
+      position:
+        x: 100
+        'y': 1300
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: data
+            label: data
+            position:
+              x: 0
+              'y': 50
+            dataType: any
+        outputs:
+          - name: next
+            label: next
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+  - id: markRead
+    type: service_invoke
+    name: Mark Message as Read
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"service":"socialeyes.MessagingService@1.0.0","method":"markAsRead","params":{"messageId":"${message.id}"},"enabled":true,"continueOnError":true}
+    designer:
+      position:
+        x: 100
+        'y': 1450
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: params
+            label: params
+            position:
+              x: 0
+              'y': 50
+            dataType: any
+          - name: context
+            label: context
+            position:
+              x: 0
+              'y': 70
+            dataType: object
+        outputs:
+          - name: next
+            label: next
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+          - name: result
+            label: result
+            position:
+              x: 200
+              'y': 50
+            dataType: any
+          - name: error
+            label: error
+            position:
+              x: 200
+              'y': 70
+            dataType: error
+  - id: logNoMessages
+    type: log
+    name: Log No New Messages
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"message":"No new messages found for account
+      ${input.accountId}","level":"info","enabled":true,"continueOnError":false}
+    designer:
+      position:
+        x: 420
+        'y': 760
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: data
+            label: data
+            position:
+              x: 0
+              'y': 50
+            dataType: any
+        outputs:
+          - name: next
+            label: next
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+  - id: logComplete
+    type: log
+    name: Log Workflow Complete
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: >-
+      {"message":"DM processing complete for account ${input.accountId}. Synced:
+      ${step.syncMessages.result.newMessages}","level":"info","data":{"accountId":"${input.accountId}","platform":"${input.platform}","mode":"${input.processingMode}"},"enabled":true,"continueOnError":false,"timeout":null,"condition":null,"inputs":null,"outputs":{"processedCount":"${step.syncMessages.result.newMessages}"}}
+    designer:
+      position:
+        x: 100
+        'y': 1000
+      size:
+        width: 200
+        height: 100
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 100
+              'y': 0
+            dataType: any
+          - name: data
+            label: data
+            position:
+              x: 0
+              'y': 50
+            dataType: any
+        outputs:
+          - name: next
+            label: next
+            position:
+              x: 100
+              'y': 100
+            dataType: any
+  - id: __end__
+    type: end
+    name: End
+    enabled: true
+    continueOnError: false
+    timeout: null
+    inputs: '{"name":"End","returnValue":"success"}'
+    designer:
+      position:
+        x: 100
+        'y': 1600
+      size:
+        width: 120
+        height: 60
+      ports:
+        inputs:
+          - name: previous
+            label: previous
+            position:
+              x: 60
+              'y': 0
+            dataType: null
+        outputs: []
+metadata:
+  designer:
+    canvas:
+      zoom: 1
+      panX: 117.89981747430045
+      panY: 23.939746272892876
+      gridSize: null
+      snapToGrid: null
+    connections:
+      - id: connection_l6lzauw84
+        sourceStepId: checkEscalation
+        sourcePort: checkEscalation_true_control_output
+        targetStepId: logAutoReply
+        targetPort: logAutoReply_previous_control_input
+        style: null
+        label: null
+      - id: connection_ftj2u9dd3
+        sourceStepId: checkEscalation
+        sourcePort: checkEscalation_false_control_output
+        targetStepId: logNoGuidelines
+        targetPort: logNoGuidelines_previous_control_input
+        style: null
+        label: null
+      - id: connection_u9dfdbvjt
+        sourceStepId: routeMessage
+        sourcePort: routeMessage_true_control_output
+        targetStepId: checkEscalation
+        targetPort: checkEscalation_previous_control_input
+        style: null
+        label: null
+      - id: connection_gqddpsir9
+        sourceStepId: routeMessage
+        sourcePort: routeMessage_false_control_output
+        targetStepId: logForReview
+        targetPort: logForReview_previous_control_input
+        style: null
+        label: null
+      - id: connection_24n8bjrul
+        sourceStepId: processMessages
+        sourcePort: processMessages_loop_body_control_output
+        targetStepId: loadContext
+        targetPort: loadContext_previous_control_input
+        style: null
+        label: null
+      - id: connection_v10fiipjd
+        sourceStepId: checkNewMessages
+        sourcePort: checkNewMessages_true_control_output
+        targetStepId: fetchInbox
+        targetPort: fetchInbox_previous_control_input
+        style: null
+        label: null
+      - id: connection_bne0jaado
+        sourceStepId: checkNewMessages
+        sourcePort: checkNewMessages_false_control_output
+        targetStepId: logNoMessages
+        targetPort: logNoMessages_previous_control_input
+        style: null
+        label: null
+      - id: connection_isio3hmvk
+        sourceStepId: logStart
+        sourcePort: logStart_next_control_output
+        targetStepId: syncMessages
+        targetPort: syncMessages_previous_control_input
+        style: null
+        label: null
+      - id: connection_mujnumqio
+        sourceStepId: syncMessages
+        sourcePort: syncMessages_next_control_output
+        targetStepId: checkNewMessages
+        targetPort: checkNewMessages_previous_control_input
+        style: null
+        label: null
+      - id: connection_9j175fzlq
+        sourceStepId: checkNewMessages
+        sourcePort: checkNewMessages_true_control_output
+        targetStepId: logComplete
+        targetPort: logComplete_previous_control_input
+        style: null
+        label: null
+      - id: connection_gsdd5qi4y
+        sourceStepId: __start__
+        sourcePort: __start___next_control_output
+        targetStepId: logStart
+        targetPort: logStart_previous_control_input
+        style: null
+        label: null
+      - id: connection_x5qdr95z5
+        sourceStepId: logComplete
+        sourcePort: logComplete_next_control_output
+        targetStepId: __end__
+        targetPort: __end___previous_control_input
+        style: null
+        label: null
+    notes: null
+    groups: null

@@ -32,9 +32,10 @@ function yamlToWorkflow(definition: YamlWorkflowDefinition, absoluteFilePath: st
  * Load a YAML workflow file and convert it to an IWorkflow definition.
  * Logs warnings/errors but does not throw — failed workflows are skipped.
  */
-function loadYamlWorkflow(filename: string): Reactory.Workflow.IWorkflow | null {
+function loadYamlWorkflow(nameSpace: string, name: string, filename: string, version: string = '1.0.0'): Reactory.Workflow.IWorkflow | null {
     const parser = new YamlFlowParser();
-    const filePath = join(__dirname, filename);
+    const { REACTORY_DATA } = process.env;
+    const filePath = join(REACTORY_DATA as string, 'workflows', 'catalog', nameSpace, name, version,  filename);
 
     try {
         const result = parser.parseFromFile(filePath);
@@ -55,7 +56,7 @@ function loadYamlWorkflow(filename: string): Reactory.Workflow.IWorkflow | null 
             return null;
         }
 
-        return yamlToWorkflow(result.workflow, filePath);
+         return yamlToWorkflow(result.workflow, filePath);
     } catch (error) {
         logger
         .error(`[SocialEyes Workflow] Exception loading ${filename}:`, error);
@@ -68,14 +69,14 @@ function loadYamlWorkflow(filename: string): Reactory.Workflow.IWorkflow | null 
 // ─────────────────────────────────────────────
 
 const WORKFLOW_FILES = [
-    'process-direct-messages.yaml',
-    'content-takedown.yaml',
-    'social-listening-orchestration.yaml',
-    'sentiment-analysis-pipeline.yaml',
+    { filename: 'ProcessDirectMessages.yaml', nameSpace: 'reactory-socialeyes', name: 'ProcessDirectMessages', version: '1.0.0' },
+    { filename: 'ContentTakedown.yaml', nameSpace: 'reactory-socialeyes', name: 'ContentTakedown', version: '1.0.0' },
+    { filename: 'SocialListeningOrchestration.yaml', nameSpace: 'reactory-socialeyes', name: 'SocialListeningOrchestration', version: '1.0.0' },
+    { filename: 'SentimentAnalysisPipeline.yaml', nameSpace: 'reactory-socialeyes', name: 'SentimentAnalysisPipeline', version: '1.0.0' },
 ];
 
 const workflows: Reactory.Workflow.IWorkflow[] = WORKFLOW_FILES
-    .map(loadYamlWorkflow)
+    .map(({ nameSpace, name, filename, version }) => loadYamlWorkflow(nameSpace, name, filename, version))
     .filter((w): w is Reactory.Workflow.IWorkflow => w !== null);
 
 export default workflows;
