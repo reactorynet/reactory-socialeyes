@@ -1,7 +1,7 @@
 # SocialEyes — Sentiment Analysis Pipeline Workflow
 # Batch-processes social posts for sentiment scoring, topic extraction, and trend detection
 
-nameSpace: sreactory-socialeyes
+nameSpace: reactory-socialeyes
 name: SentimentAnalysisPipeline
 version: 1.0.0
 description: >
