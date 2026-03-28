@@ -42,7 +42,7 @@ steps:
     name: Log Workflow Start
     enabled: true
     continueOnError: false
-    timeout: null
+    timeout: null    
     inputs: >-
       {"message":"Starting DM processing for account ${input.accountId} on ${input.platform} in ${input.processingMode}
       mode","level":"info","data":{"accountId":"${input.accountId}","platform":"${input.platform}","mode":"${input.processingMode}"},"enabled":true,"continueOnError":false,"timeout":null,"condition":null,"inputs":null,"outputs":null}
@@ -80,8 +80,18 @@ steps:
     enabled: true
     continueOnError: false
     timeout: null
-    inputs: >-
-      {"service":"socialeyes.MessagingService@1.0.0","method":"syncInbox","params":{"accountId":"${input.accountId}"},"enabled":true,"continueOnError":false,"timeout":null,"condition":null,"inputs":null,"outputs":{"result":"response"}}
+    inputs: 
+      serviceId: socialeyes.MessagingService@1.0.0
+      method: syncInbox
+      arguments:
+        userId: ${workflow.userId}
+        platform: ${input.platform}
+      passthrough: true
+      errorHandling: continue
+      retryConfig:
+        maxAttempts: 2
+        delay: 1000
+        backoff: linear
     designer:
       position:
         x: 380
