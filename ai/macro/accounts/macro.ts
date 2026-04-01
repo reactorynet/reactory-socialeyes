@@ -368,9 +368,11 @@ export const LookupAccountRegistry: MacroComponentDefinition<typeof LookupAccoun
   description: 'Look up a social media user by username or platform ID. Returns public profile data.',
   roles: ['USER'],
   stem: 'socialEyesLookupAccount',
-  tags: ['social', 'account', 'lookup', 'search', 'profile'],
+  tags: ['social', 'account', 'lookup', 'search', 'profile'],  
+  runat: "server",
   tools: [{
     type: 'function',
+    runat: "server",
     function: {
       name: 'socialEyesLookupAccount',
       description: 'Look up a social media user profile by username or platform ID on X, Reddit, Facebook, or Instagram.',

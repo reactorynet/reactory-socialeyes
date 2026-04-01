@@ -163,6 +163,8 @@ tools:
   includes:
     # Core utilities
     - readFile
+    - snip
+    - insertText
     - writeFile
     - listDirectory
     - createDirectory
@@ -194,7 +196,8 @@ tools:
     - socialEyesMarkMessageRead
 
     # Cross-agent collaboration
-    - chat
+    - chats
+    - todo 
 
 # ─────────────────────────────────────────────
 # Macros Configuration
