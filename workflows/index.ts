@@ -12,7 +12,7 @@ const WORKFLOW_FILES = [
 ];
 
 const workflows: Reactory.Workflow.IWorkflow[] = WORKFLOW_FILES
-    .map(({ nameSpace, name, filename, version }) => loadYamlWorkflow(nameSpace, name, filename, version))
+    .map(({ nameSpace, name, filename, version }) => loadYamlWorkflow(nameSpace, name, filename, version, __dirname))
     .filter((w): w is Reactory.Workflow.IWorkflow => w !== null);
 
 export default workflows;
