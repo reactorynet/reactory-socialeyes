@@ -95,7 +95,7 @@ steps:
   # Step 2: Calculate aggregation delay in milliseconds
   - id: calcDelay
     name: Calculate Aggregation Delay
-    type: dataTransformation
+    type: data_transformation
     dependsOn: logStart
     config:
       transformations:
@@ -113,7 +113,7 @@ steps:
   # Step 3: Activate all listeners
   - id: activateListeners
     name: Activate All Listeners
-    type: forEach
+    type: for_each
     dependsOn: calcDelay
     config:
       items: "${input.listenerIds}"
@@ -167,7 +167,7 @@ steps:
   # Step 5: Collect and aggregate results from all listeners
   - id: collectResults
     name: Collect Results from Listeners
-    type: forEach
+    type: for_each
     dependsOn: waitForCollection
     config:
       items: "${input.listenerIds}"
@@ -218,7 +218,7 @@ steps:
   # Step 7: Apply action rules if configured
   - id: checkActionRules
     name: Check Action Rules
-    type: conditional
+    type: condition
     dependsOn: aggregateResults
     config:
       condition: "${input.actionRules.length} > 0"
@@ -232,7 +232,7 @@ steps:
 
         - id: processRules
           name: Process Action Rules
-          type: forEach
+          type: for_each
           dependsOn: logRulesApplied
           config:
             items: "${input.actionRules}"

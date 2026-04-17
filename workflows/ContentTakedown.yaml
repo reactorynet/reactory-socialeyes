@@ -153,7 +153,7 @@ steps:
   # Step 4: Route based on duplicate check
   - id: routeDuplicate
     name: Route on Duplicate Check
-    type: conditional
+    type: condition
     dependsOn: checkDuplicate
     config:
       condition: "${step.checkDuplicate.existingReport} !== null && ${step.checkDuplicate.existingReport.metadata.takedownRequested} === true"

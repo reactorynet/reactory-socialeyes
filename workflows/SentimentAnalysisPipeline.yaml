@@ -122,7 +122,7 @@ steps:
   # Step 3: Fetch and analyze each post
   - id: analyzeAll
     name: Fetch and Analyze Posts
-    type: forEach
+    type: for_each
     dependsOn: validateInput
     config:
       items: "${input.postIds}"
@@ -144,7 +144,7 @@ steps:
         # Check if post was found
         - id: checkPost
           name: Check Post Exists
-          type: conditional
+          type: condition
           dependsOn: fetchPost
           config:
             condition: "${step.fetchPost.response} !== null"
@@ -211,7 +211,7 @@ steps:
   # Step 5: Check for baseline comparison
   - id: checkBaseline
     name: Compare Against Baseline
-    type: conditional
+    type: condition
     dependsOn: aggregateInsights
     config:
       condition: "${input.compareBaseline} === true"
@@ -228,7 +228,7 @@ steps:
         # Check for negative sentiment spike
         - id: checkNegativeSpike
           name: Check for Negative Sentiment Spike
-          type: conditional
+          type: condition
           dependsOn: logBaselineComparison
           config:
             condition: "${step.aggregateInsights.averageSentiment} < ${input.sentimentThresholds.negativeSpikeThreshold}"
