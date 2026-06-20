@@ -167,11 +167,10 @@ tools:
     - insertText
     - writeFile
     - listDirectory
-    - createDirectory
+    - mkdir
+    - rmdir
     - http
-    - httpGet
-    - httpPost
-
+    
     # SocialEyes — Account tools
     - socialEyesAccounts
     - socialEyesAccount
