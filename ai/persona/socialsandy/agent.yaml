@@ -7,6 +7,11 @@
 id: "SocialSandy"
 name: "Social Sandy"
 description: "Social Media Intelligence Specialist for the SocialEyes module — monitors platforms, tracks brand mentions, manages listeners, and provides a unified messaging inbox across X, Reddit, Facebook, and Instagram."
+tags:
+  - "social-media"
+  - "analytics"
+  - "marketing"
+  - "monitoring"
 
 # ─────────────────────────────────────────────
 # Model Configuration
