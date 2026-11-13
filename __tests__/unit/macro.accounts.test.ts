@@ -37,7 +37,7 @@ import {
   DisconnectAccountRegistry,
   LookupAccount,
   LookupAccountRegistry,
-  redactAccountParams,
+  redactSecrets,
   scrubSecretValues,
 } from '../../ai/macro/accounts/macro';
 
@@ -486,7 +486,7 @@ describe('Account macro credential redaction', () => {
   });
 
   it('redacts nested auth / scope blobs while keeping scopes', () => {
-    const redacted = redactAccountParams({
+    const redacted = redactSecrets({
       platform: 'x',
       scopes: ['read'],
       auth: { bearer: secrets.accessToken },
@@ -505,5 +505,118 @@ describe('Account macro credential redaction', () => {
     expect(scrubSecretValues(`bad token ${secrets.accessToken}`, [secrets.accessToken])).toBe(
       'bad token [REDACTED]',
     );
+  });
+
+  // ── Defence in depth: the `data` payload ──────────────────────────────────
+
+  it('redacts tokens that arrive on the data payload, not just params', async () => {
+    // A GraphQL fragment change (SocialAccount has `metadata: Any`) could re-open
+    // the leak through `data` instead of `params`. Guard that path explicitly.
+    mockMutateGraph.mockResolvedValueOnce({
+      socialEyesConnectAccount: {
+        ...sampleAccount,
+        accessToken: secrets.accessToken,
+        metadata: { refreshToken: secrets.refreshToken },
+      },
+    } as any);
+
+    const result = await ConnectAccount(connectProps, mockState);
+
+    expect(result.success).toBe(true);
+    expectNoSecrets(result);
+    expect((result.data as any).id).toBe('acc-1');
+    expect((result.data as any).accessToken).toBe('[REDACTED]');
+    expect((result.data as any).metadata.refreshToken).toBe('[REDACTED]');
+  });
+
+  it('redacts tokens on the data payload of socialEyesAccounts', async () => {
+    mockQueryGraph.mockResolvedValueOnce({
+      socialEyesAccounts: [{ ...sampleAccount, refreshToken: secrets.refreshToken }],
+    } as any);
+
+    const result = await ListAccounts({}, mockState);
+
+    expect(result.success).toBe(true);
+    expectNoSecrets(result);
+    expect((result.data as any[])[0].id).toBe('acc-1');
+  });
+
+  // ── Robustness of the redaction helpers ───────────────────────────────────
+
+  it('does not mutate the object it redacts', () => {
+    const input = { platform: 'x', accessToken: secrets.accessToken, nested: { refreshToken: secrets.refreshToken } };
+    const snapshot = JSON.stringify(input);
+
+    const output = redactSecrets(input);
+
+    expect(JSON.stringify(input)).toBe(snapshot);
+    expect(output).not.toBe(input);
+    expect(output.accessToken).toBe('[REDACTED]');
+  });
+
+  it('terminates on a self-referencing array instead of overflowing the stack', () => {
+    const cyclic: any[] = [{ platform: 'x' }];
+    cyclic.push(cyclic);
+
+    expect(() => redactSecrets(cyclic)).not.toThrow();
+    expect(redactSecrets(cyclic)[0]).toEqual({ platform: 'x' });
+  });
+
+  it('copies shared acyclic references in full rather than treating them as cycles', () => {
+    const shared = { id: 'acc-1', name: 'Sandy' };
+    const redacted = redactSecrets({ a: shared, b: shared });
+
+    expect(redacted.a).toEqual({ id: 'acc-1', name: 'Sandy' });
+    expect(redacted.b).toEqual({ id: 'acc-1', name: 'Sandy' });
+  });
+
+  it('treats a literal __proto__ key as data instead of a prototype', () => {
+    const payload = JSON.parse('{"__proto__":{"accessToken":"tok-access-ABC123"},"platform":"x"}');
+    const redacted = redactSecrets(payload);
+
+    expect(JSON.stringify(redacted)).not.toContain(secrets.accessToken);
+    expect(Object.getPrototypeOf(redacted)).toBe(Object.prototype);
+  });
+
+  it('scrubs URL-encoded and differently-cased secret values', () => {
+    const encoded = encodeURIComponent(secrets.accessToken);
+    expect(scrubSecretValues(`url?token=${encoded}`, [secrets.accessToken])).toBe('url?token=[REDACTED]');
+    expect(scrubSecretValues(`bad ${secrets.accessToken.toUpperCase()}`, [secrets.accessToken])).toBe(
+      'bad [REDACTED]',
+    );
+  });
+
+  it('returns an error result, not a throw, when the rejection is not an Error', async () => {
+    mockMutateGraph.mockRejectedValueOnce('plain string failure' as never);
+
+    const result = await ConnectAccount(connectProps, mockState);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('plain string failure');
+    expectNoSecrets(result);
+  });
+
+  it('scrubs the error envelope of socialEyesAccount too', async () => {
+    mockQueryGraph.mockRejectedValueOnce(
+      new Error(`lookup failed for ${secrets.accessToken}`) as never,
+    );
+
+    const result = await GetAccount({ id: 'acc-1', ...secrets } as any, mockState);
+
+    expect(result.success).toBe(false);
+    expectNoSecrets(result);
+    expect(result.error).toContain('[REDACTED]');
+  });
+
+  it('scrubs the error envelope of socialEyesDisconnectAccount too', async () => {
+    mockMutateGraph.mockRejectedValueOnce(
+      new Error(`disconnect failed for ${secrets.refreshToken}`) as never,
+    );
+
+    const result = await DisconnectAccount({ id: 'acc-1', ...secrets } as any, mockState);
+
+    expect(result.success).toBe(false);
+    expectNoSecrets(result);
+    expect(result.error).toContain('[REDACTED]');
   });
 });

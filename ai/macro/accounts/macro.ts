@@ -21,56 +21,151 @@ import {
 const REDACTED_VALUE = '[REDACTED]';
 
 /**
- * Property names that carry credentials. `tokenExpiry` is included deliberately:
- * the expiry of a live OAuth token is token metadata, not account data, and the
- * caller has no legitimate use for it.
+ * Shortest secret value worth scanning for in free text. Shorter values match far
+ * too much ordinary prose to be a useful scrub, so values below this length are
+ * accepted as a residual risk — real OAuth tokens are always longer.
  */
-const SENSITIVE_KEY_PATTERN = /(token|secret|password|passphrase|credential|authorization|bearer|api[-_]?key)/i;
-
-function redactValue(value: unknown, seen: Set<object>): unknown {
-  if (Array.isArray(value)) return value.map((entry) => redactValue(entry, seen));
-  if (value instanceof Date) return value.toISOString();
-  if (value === null || typeof value !== 'object') return value;
-  if (seen.has(value as object)) return REDACTED_VALUE;
-
-  seen.add(value as object);
-  const redacted: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    const normalisedKey = key.toLowerCase();
-    // `auth` and `scope` are the provider shapes that can carry a token blob;
-    // `scopes` (the granted-scope list) stays visible and useful.
-    const isSensitive =
-      normalisedKey === 'auth' || normalisedKey === 'scope' || SENSITIVE_KEY_PATTERN.test(key);
-    redacted[key] = isSensitive ? REDACTED_VALUE : redactValue(entry, seen);
-  }
-  return redacted;
-}
+const MIN_SCRUB_SECRET_LENGTH = 4;
 
 /**
- * Returns a copy of macro inputs that is safe to place in a tool result.
+ * Property names that carry credentials.
  *
- * OAuth material (accessToken, refreshToken, tokenExpiry, provider auth/scope
- * blobs) is masked; non-secret fields such as platform, providerAccountId,
- * name, email, avatar and scopes are preserved so results stay debuggable.
- * Every return path in this file — success, validation failure and thrown
- * error — must use this instead of echoing `props` verbatim.
+ * `tokenExpiry` is matched deliberately: the expiry of a live OAuth token is
+ * token metadata, not account data, and the caller has no legitimate use for it.
+ *
+ * `auth` and `scope` are special-cased exactly (not by pattern) because they are
+ * the provider shapes that can carry a token blob, while `scopes` — the granted
+ * scope list — must stay visible and useful.
  */
-export function redactAccountParams<T extends object>(params: T): Record<string, unknown> {
-  return redactValue(params, new Set<object>()) as Record<string, unknown>;
+const SENSITIVE_KEY_PATTERN =
+  /(token|secret|password|passphrase|credential|authorization|bearer|api[-_]?key|oauth|private[-_]?key)/i;
+
+function isSensitiveKey(key: string): boolean {
+  const normalisedKey = key.toLowerCase();
+  return normalisedKey === 'auth' || normalisedKey === 'scope' || SENSITIVE_KEY_PATTERN.test(key);
+}
+
+const REGEXP_SPECIAL_CHARACTERS = '\\^$.*+?()[]{}|';
+
+function escapeRegExp(value: string): string {
+  let escaped = '';
+  for (const character of value) {
+    escaped += REGEXP_SPECIAL_CHARACTERS.includes(character) ? `\\${character}` : character;
+  }
+  return escaped;
 }
 
 /**
- * Strips literal secret values out of free text. Upstream GraphQL/adapter errors
- * sometimes echo the credential they rejected; those messages must be scrubbed
- * before they reach the model or the persisted conversation.
+ * Deep-copies `value`, replacing anything credential-bearing with a placeholder.
+ *
+ * `ancestors` holds only the objects on the *current* path, so genuine cycles
+ * (including self-referencing arrays) terminate, while shared acyclic references
+ * are still copied in full rather than being mistaken for a cycle.
  */
-export function scrubSecretValues(text: string, secrets: Array<string | undefined>): string {
+function redactValue(value: unknown, ancestors: WeakSet<object>): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  if (value instanceof Date) return value.toISOString();
+  if (ancestors.has(value as object)) return REDACTED_VALUE;
+
+  ancestors.add(value as object);
+  try {
+    if (Array.isArray(value)) return value.map((entry) => redactValue(entry, ancestors));
+
+    const redacted: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      // defineProperty rather than assignment so a literal `__proto__` key becomes
+      // an own enumerable property instead of rewriting the result's prototype.
+      Object.defineProperty(redacted, key, {
+        value: isSensitiveKey(key) ? REDACTED_VALUE : redactValue(entry, ancestors),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    return redacted;
+  } finally {
+    ancestors.delete(value as object);
+  }
+}
+
+/**
+ * Returns a redacted deep copy of `value`, safe to place in a tool result.
+ *
+ * Use this for everything a macro hands back — the echoed `params`, the `data`
+ * payload, and any nested object. OAuth material (accessToken, refreshToken,
+ * tokenExpiry, provider auth/scope blobs, private keys) is masked; ordinary
+ * fields such as platform, providerAccountId, name, email, avatar and scopes are
+ * preserved so results stay debuggable.
+ *
+ * Every return path in this file — success, validation failure and thrown
+ * error — must go through this instead of echoing `props` or `data` verbatim.
+ */
+export function redactSecrets<T>(value: T): T {
+  return redactValue(value, new WeakSet<object>()) as T;
+}
+
+/**
+ * Collects the credential values carried by an object so they can be scrubbed
+ * out of free text (error messages, instruction strings, log lines).
+ */
+function secretValuesFrom(source: unknown, depth = 0): string[] {
+  if (depth > 4 || source === null || typeof source !== 'object') return [];
+
+  const secrets: string[] = [];
+  for (const [key, entry] of Object.entries(source as Record<string, unknown>)) {
+    if (typeof entry === 'string') {
+      if (isSensitiveKey(key)) secrets.push(entry);
+    } else {
+      secrets.push(...secretValuesFrom(entry, depth + 1));
+    }
+  }
+  return secrets;
+}
+
+/**
+ * Strips secret values out of free text. Upstream GraphQL/adapter errors
+ * sometimes echo the credential they rejected, and those messages travel to the
+ * model, the persisted conversation and the log files.
+ *
+ * Matching is case-insensitive and covers both the raw value and its
+ * URL-encoded form, because a token sent as a query parameter arrives encoded.
+ */
+export function scrubSecretValues(text: unknown, secrets: Array<string | undefined>): string {
+  if (typeof text !== 'string') return '';
+
   let scrubbed = text;
   for (const secret of secrets) {
-    if (typeof secret !== 'string' || secret.length < 4) continue;
-    scrubbed = scrubbed.split(secret).join(REDACTED_VALUE);
+    if (typeof secret !== 'string' || secret.length < MIN_SCRUB_SECRET_LENGTH) continue;
+
+    for (const variant of new Set([secret, encodeURIComponent(secret)])) {
+      if (!variant) continue;
+      scrubbed = scrubbed.replace(new RegExp(escapeRegExp(variant), 'gi'), REDACTED_VALUE);
+    }
   }
   return scrubbed;
+}
+
+/**
+ * Normalises anything that can be thrown into a message string, so an error
+ * handler cannot itself fail on a non-Error rejection.
+ */
+function errorMessageOf(error: unknown): string {
+  if (typeof error === 'string') return error;
+  if (error instanceof Error) return error.message;
+  if (error !== null && typeof error === 'object') {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string') return message;
+  }
+  return error === undefined || error === null ? 'Unknown error' : String(error);
+}
+
+/**
+ * Builds a scrubbed, log-safe rendering of an error. The stack is kept for
+ * debuggability, but its first line repeats the message, so both get scrubbed.
+ */
+function scrubErrorForLog(error: unknown, secrets: Array<string | undefined>): string {
+  const stack = error instanceof Error && typeof error.stack === 'string' ? error.stack : null;
+  return scrubSecretValues(stack ?? errorMessageOf(error), secrets);
 }
 
 // ─────────────────────────────────────────────
@@ -124,9 +219,9 @@ export const ListAccounts: Macro<SocialEyesMacroResult<SocialAccountResult[]>, L
 
     return {
       success: true,
-      data: accounts,
+      data: redactSecrets(accounts),
       tool: 'socialEyesAccounts',
-      params: redactAccountParams(props),
+      params: redactSecrets(props),
       instructions: `
 ## Connected Social Accounts (${accounts.length})
 
@@ -138,8 +233,14 @@ Use id to reference accounts in listener creation, messaging, and sync operation
 `,
     };
   } catch (error) {
-    logger.error('socialEyesListAccounts error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesAccounts', params: redactAccountParams(props) };
+    const secrets = secretValuesFrom(props);
+    logger.error(`socialEyesListAccounts error: ${scrubErrorForLog(error, secrets)}`);
+    return {
+      success: false,
+      error: scrubSecretValues(errorMessageOf(error), secrets),
+      tool: 'socialEyesAccounts',
+      params: redactSecrets(props),
+    };
   }
 };
 
@@ -187,23 +288,29 @@ export const GetAccount: Macro<SocialEyesMacroResult<SocialAccountResult | null>
   state: ChatState,
 ): Promise<SocialEyesMacroResult<SocialAccountResult | null>> => {
   const { id } = props;
-  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesAccount', params: redactAccountParams(props) };
+  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesAccount', params: redactSecrets(props) };
 
   try {
     const result = await queryGraph(GET_ACCOUNT_QUERY, { id }, {}, state.context);
     const account: SocialAccountResult | null = result?.socialEyesAccount ?? null;
     return {
       success: true,
-      data: account,
+      data: redactSecrets(account),
       tool: 'socialEyesAccount',
-      params: redactAccountParams(props),
+      params: redactSecrets(props),
       instructions: account
         ? `## Account: ${account.name} (${account.provider})\n- ID: ${account.id}\n- Active: ${account.isActive}\n- Scopes: ${account.scopes?.join(', ') ?? 'none'}`
         : `No account found with id: ${id}`,
     };
   } catch (error) {
-    logger.error('socialEyesGetAccount error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesAccount', params: redactAccountParams(props) };
+    const secrets = secretValuesFrom(props);
+    logger.error(`socialEyesGetAccount error: ${scrubErrorForLog(error, secrets)}`);
+    return {
+      success: false,
+      error: scrubSecretValues(errorMessageOf(error), secrets),
+      tool: 'socialEyesAccount',
+      params: redactSecrets(props),
+    };
   }
 };
 
@@ -251,7 +358,7 @@ export const ConnectAccount: Macro<SocialEyesMacroResult<SocialAccountResult>, C
   const required = ['platform', 'accessToken', 'providerAccountId', 'name'];
   for (const field of required) {
     if (!(props as any)[field]) {
-      return { success: false, error: `${field} is required`, tool: 'socialEyesConnectAccount', params: redactAccountParams(props) };
+      return { success: false, error: `${field} is required`, tool: 'socialEyesConnectAccount', params: redactSecrets(props) };
     }
   }
 
@@ -261,21 +368,22 @@ export const ConnectAccount: Macro<SocialEyesMacroResult<SocialAccountResult>, C
     logger.info(`socialEyesConnectAccount: connected ${props.platform} account ${account?.id}`);
     return {
       success: true,
-      data: account,
+      data: redactSecrets(account),
       tool: 'socialEyesConnectAccount',
-      params: redactAccountParams(props),
+      params: redactSecrets(props),
       instructions: scrubSecretValues(
         `## Account Connected\nSuccessfully connected ${account.provider} account **${account.name}** (ID: ${account.id}).`,
         [props.accessToken, props.refreshToken],
       ),
     };
   } catch (error) {
-    logger.error('socialEyesConnectAccount error:', error);
+    const secrets = secretValuesFrom(props);
+    logger.error(`socialEyesConnectAccount error: ${scrubErrorForLog(error, secrets)}`);
     return {
       success: false,
-      error: scrubSecretValues((error as Error).message, [props.accessToken, props.refreshToken]),
+      error: scrubSecretValues(errorMessageOf(error), secrets),
       tool: 'socialEyesConnectAccount',
-      params: redactAccountParams(props),
+      params: redactSecrets(props),
     };
   }
 };
@@ -333,7 +441,7 @@ export const DisconnectAccount: Macro<SocialEyesMacroResult<{ id: string; provid
   state: ChatState,
 ) => {
   const { id } = props;
-  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesDisconnectAccount', params: redactAccountParams(props) };
+  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesDisconnectAccount', params: redactSecrets(props) };
 
   try {
     const result = await mutateGraph(DISCONNECT_ACCOUNT_MUTATION, { id }, {}, state.context);
@@ -341,14 +449,20 @@ export const DisconnectAccount: Macro<SocialEyesMacroResult<{ id: string; provid
     logger.info(`socialEyesDisconnectAccount: deactivated ${id}`);
     return {
       success: true,
-      data: account,
+      data: redactSecrets(account),
       tool: 'socialEyesDisconnectAccount',
-      params: redactAccountParams(props),
+      params: redactSecrets(props),
       instructions: `## Account Disconnected\nAccount **${account?.name}** (${account?.provider}) has been deactivated.`,
     };
   } catch (error) {
-    logger.error('socialEyesDisconnectAccount error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesDisconnectAccount', params: redactAccountParams(props) };
+    const secrets = secretValuesFrom(props);
+    logger.error(`socialEyesDisconnectAccount error: ${scrubErrorForLog(error, secrets)}`);
+    return {
+      success: false,
+      error: scrubSecretValues(errorMessageOf(error), secrets),
+      tool: 'socialEyesDisconnectAccount',
+      params: redactSecrets(props),
+    };
   }
 };
 
@@ -403,8 +517,8 @@ export const LookupAccount: Macro<SocialEyesMacroResult, LookupAccountProps> = a
   state: ChatState,
 ): Promise<SocialEyesMacroResult> => {
   const { platform, username, userId, accessToken } = props;
-  if (!platform) return { success: false, error: 'platform is required', tool: 'socialEyesLookupAccount', params: redactAccountParams(props) };
-  if (!username && !userId) return { success: false, error: 'username or userId is required', tool: 'socialEyesLookupAccount', params: redactAccountParams(props) };
+  if (!platform) return { success: false, error: 'platform is required', tool: 'socialEyesLookupAccount', params: redactSecrets(props) };
+  if (!username && !userId) return { success: false, error: 'username or userId is required', tool: 'socialEyesLookupAccount', params: redactSecrets(props) };
 
   try {
     const input: Record<string, unknown> = { platform };
@@ -417,9 +531,9 @@ export const LookupAccount: Macro<SocialEyesMacroResult, LookupAccountProps> = a
 
     return {
       success: true,
-      data: profile,
+      data: redactSecrets(profile),
       tool: 'socialEyesLookupAccount',
-      params: redactAccountParams(props),
+      params: redactSecrets(props),
       instructions: scrubSecretValues(
         profile
           ? `## Profile Found: @${profile.username}\n- Name: ${profile.name ?? 'N/A'}\n- Followers: ${profile.followerCount ?? 'N/A'}\n- Verified: ${profile.verified ?? false}\n- URL: ${profile.url ?? 'N/A'}\n- Bio: ${profile.bio ?? 'N/A'}`
@@ -428,12 +542,13 @@ export const LookupAccount: Macro<SocialEyesMacroResult, LookupAccountProps> = a
       ),
     };
   } catch (error) {
-    logger.error('socialEyesLookupAccount error:', error);
+    const secrets = secretValuesFrom(props);
+    logger.error(`socialEyesLookupAccount error: ${scrubErrorForLog(error, secrets)}`);
     return {
       success: false,
-      error: scrubSecretValues((error as Error).message, [accessToken]),
+      error: scrubSecretValues(errorMessageOf(error), secrets),
       tool: 'socialEyesLookupAccount',
-      params: redactAccountParams(props),
+      params: redactSecrets(props),
     };
   }
 };
