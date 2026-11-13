@@ -25,7 +25,7 @@ import {
   queryGraph,
   mutateGraph,
 } from '@reactory/server-core/graph/ReactoryApolloClient';
-
+import logger from '@reactory/server-core/logging';
 import {
   ListAccounts,
   ListAccountsRegistry,
@@ -618,5 +618,58 @@ describe('Account macro credential redaction', () => {
     expect(result.success).toBe(false);
     expectNoSecrets(result);
     expect(result.error).toContain('[REDACTED]');
+  });
+
+  it('does not throw when a secret contains a lone surrogate', async () => {
+    // encodeURIComponent throws URIError on a lone surrogate; the scrubber must
+    // fall back to the raw form rather than break the error envelope.
+    const malformedToken = 'abcd\ud800';
+    mockMutateGraph.mockRejectedValueOnce(new Error(`bad ${malformedToken}`) as never);
+
+    const result = await ConnectAccount({ ...connectProps, accessToken: malformedToken }, mockState);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('[REDACTED]');
+    expect(JSON.stringify(result)).not.toContain('abcd');
+  });
+
+  it('does not leak a token that the server echoed into a display field', async () => {
+    // `instructions` is built from the redacted payload, but redaction is key
+    // based — a token the caller supplied and the server echoed back as a plain
+    // display value must still be scrubbed.
+    mockQueryGraph.mockResolvedValueOnce({
+      socialEyesAccount: { ...sampleAccount, name: `Sandy ${secrets.accessToken}` },
+    } as any);
+
+    const result = await GetAccount({ id: 'acc-1', ...secrets } as any, mockState);
+
+    expect(result.success).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(secrets.accessToken);
+    expect(result.instructions).toContain('[REDACTED]');
+  });
+
+  it('scrubs the token out of the message handed to the logger', async () => {
+    mockMutateGraph.mockRejectedValueOnce(
+      new Error(`Auth failed for access token ${secrets.accessToken}`) as never,
+    );
+
+    await ConnectAccount(connectProps, mockState);
+
+    const logged = JSON.stringify((logger.error as jest.Mock).mock.calls);
+    expect(logged).not.toContain(secrets.accessToken);
+    expect(logged).toContain('[REDACTED]');
+  });
+
+  it('keeps structured error detail in the log payload', async () => {
+    const apolloLike = Object.assign(new Error('Response not successful: 401'), {
+      graphQLErrors: [{ message: 'unauthorized', path: ['socialEyesConnectAccount'] }],
+    });
+    mockMutateGraph.mockRejectedValueOnce(apolloLike as never);
+
+    await ConnectAccount(connectProps, mockState);
+
+    const payload = (logger.error as jest.Mock).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.message).toBe('Response not successful: 401');
+    expect(String(payload.graphQLErrors)).toContain('unauthorized');
   });
 });

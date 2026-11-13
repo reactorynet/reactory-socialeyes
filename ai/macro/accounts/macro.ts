@@ -114,12 +114,28 @@ function secretValuesFrom(source: unknown, depth = 0): string[] {
   const secrets: string[] = [];
   for (const [key, entry] of Object.entries(source as Record<string, unknown>)) {
     if (typeof entry === 'string') {
-      if (isSensitiveKey(key)) secrets.push(entry);
+      // `tokenExpiry` is masked in results but is not a secret value: scrubbing an
+      // ISO timestamp out of a message would mangle unrelated diagnostics.
+      if (isSensitiveKey(key) && !/expir/i.test(key)) secrets.push(entry);
     } else {
       secrets.push(...secretValuesFrom(entry, depth + 1));
     }
   }
   return secrets;
+}
+
+/**
+ * URL-encodes a secret so its encoded form can be scrubbed too. Returns null when
+ * the value cannot be encoded — a lone surrogate, which a model-supplied or
+ * corrupted token can legitimately contain — so the caller falls back to
+ * scrubbing the raw form only instead of throwing out of an error handler.
+ */
+function encodeVariant(value: string): string | null {
+  try {
+    return encodeURIComponent(value);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -137,7 +153,7 @@ export function scrubSecretValues(text: unknown, secrets: Array<string | undefin
   for (const secret of secrets) {
     if (typeof secret !== 'string' || secret.length < MIN_SCRUB_SECRET_LENGTH) continue;
 
-    for (const variant of new Set([secret, encodeURIComponent(secret)])) {
+    for (const variant of new Set([secret, encodeVariant(secret)])) {
       if (!variant) continue;
       scrubbed = scrubbed.replace(new RegExp(escapeRegExp(variant), 'gi'), REDACTED_VALUE);
     }
@@ -160,12 +176,87 @@ function errorMessageOf(error: unknown): string {
 }
 
 /**
- * Builds a scrubbed, log-safe rendering of an error. The stack is kept for
- * debuggability, but its first line repeats the message, so both get scrubbed.
+ * Builds a structured, scrubbed, log-safe rendering of an error.
+ *
+ * The message and stack are scrubbed, and the detail Apollo attaches
+ * (`graphQLErrors`, `networkError`) is serialised and scrubbed rather than
+ * dropped — that is where the actionable auth failure text lives.
  */
-function scrubErrorForLog(error: unknown, secrets: Array<string | undefined>): string {
-  const stack = error instanceof Error && typeof error.stack === 'string' ? error.stack : null;
-  return scrubSecretValues(stack ?? errorMessageOf(error), secrets);
+function scrubErrorForLog(
+  error: unknown,
+  secrets: Array<string | undefined>,
+): Record<string, unknown> {
+  const entry: Record<string, unknown> = {
+    name: error instanceof Error ? error.name : typeof error,
+    message: scrubSecretValues(errorMessageOf(error), secrets),
+  };
+
+  if (error instanceof Error && typeof error.stack === 'string') {
+    entry.stack = scrubSecretValues(error.stack, secrets);
+  }
+
+  const detail = error as { graphQLErrors?: unknown; networkError?: unknown } | null;
+  for (const key of ['graphQLErrors', 'networkError'] as const) {
+    const value = detail?.[key];
+    if (value === undefined) continue;
+    let serialised: string;
+    try {
+      serialised = JSON.stringify(value) ?? String(value);
+    } catch {
+      serialised = String(value);
+    }
+    entry[key] = scrubSecretValues(serialised, secrets);
+  }
+
+  return entry;
+}
+
+/**
+ * Final guard for any prose a macro returns.
+ *
+ * Instructions are built from the already-redacted payload, so credential *keys*
+ * are gone; this additionally scrubs credential *values* from every source in
+ * play (the caller's props and the server payload) in case one was echoed into a
+ * display field.
+ */
+function safeInstructions(text: string, ...sources: unknown[]): string {
+  return scrubSecretValues(
+    text,
+    sources.flatMap((source) => secretValuesFrom(source)),
+  );
+}
+
+/**
+ * Replaces secret values in every string inside `value`, recursively.
+ *
+ * Key-based redaction cannot catch a credential the server echoed back into an
+ * ordinary display field, so payloads go through this as well.
+ */
+function scrubDeepValues(value: unknown, secrets: string[]): unknown {
+  if (typeof value === 'string') return scrubSecretValues(value, secrets);
+  if (value === null || typeof value !== 'object') return value;
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map((entry) => scrubDeepValues(entry, secrets));
+
+  const scrubbed: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    Object.defineProperty(scrubbed, key, {
+      value: scrubDeepValues(entry, secrets),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return scrubbed;
+}
+
+/**
+ * Prepares a payload for the tool result: credential keys masked, then any
+ * credential values from the given sources scrubbed out of every string field.
+ */
+function safePayload<T>(value: T, ...sources: unknown[]): T {
+  const secrets = sources.flatMap((source) => secretValuesFrom(source));
+  return scrubDeepValues(value, secrets) as T;
 }
 
 // ─────────────────────────────────────────────
@@ -219,7 +310,7 @@ export const ListAccounts: Macro<SocialEyesMacroResult<SocialAccountResult[]>, L
 
     return {
       success: true,
-      data: redactSecrets(accounts),
+      data: safePayload(redactSecrets(accounts), props),
       tool: 'socialEyesAccounts',
       params: redactSecrets(props),
       instructions: `
@@ -234,7 +325,7 @@ Use id to reference accounts in listener creation, messaging, and sync operation
     };
   } catch (error) {
     const secrets = secretValuesFrom(props);
-    logger.error(`socialEyesListAccounts error: ${scrubErrorForLog(error, secrets)}`);
+    logger.error('socialEyesListAccounts error', scrubErrorForLog(error, secrets));
     return {
       success: false,
       error: scrubSecretValues(errorMessageOf(error), secrets),
@@ -293,18 +384,25 @@ export const GetAccount: Macro<SocialEyesMacroResult<SocialAccountResult | null>
   try {
     const result = await queryGraph(GET_ACCOUNT_QUERY, { id }, {}, state.context);
     const account: SocialAccountResult | null = result?.socialEyesAccount ?? null;
+    // Instructions are derived from the redacted copy: one source of truth for
+    // what may leave this layer.
+    const safeAccount = redactSecrets(account);
     return {
       success: true,
-      data: redactSecrets(account),
+      data: safePayload(safeAccount, props, account),
       tool: 'socialEyesAccount',
       params: redactSecrets(props),
-      instructions: account
-        ? `## Account: ${account.name} (${account.provider})\n- ID: ${account.id}\n- Active: ${account.isActive}\n- Scopes: ${account.scopes?.join(', ') ?? 'none'}`
-        : `No account found with id: ${id}`,
+      instructions: safeInstructions(
+        safeAccount
+          ? `## Account: ${safeAccount.name} (${safeAccount.provider})\n- ID: ${safeAccount.id}\n- Active: ${safeAccount.isActive}\n- Scopes: ${safeAccount.scopes?.join(', ') ?? 'none'}`
+          : `No account found with id: ${id}`,
+        props,
+        account,
+      ),
     };
   } catch (error) {
     const secrets = secretValuesFrom(props);
-    logger.error(`socialEyesGetAccount error: ${scrubErrorForLog(error, secrets)}`);
+    logger.error('socialEyesGetAccount error', scrubErrorForLog(error, secrets));
     return {
       success: false,
       error: scrubSecretValues(errorMessageOf(error), secrets),
@@ -366,19 +464,21 @@ export const ConnectAccount: Macro<SocialEyesMacroResult<SocialAccountResult>, C
     const result = await mutateGraph(CONNECT_ACCOUNT_MUTATION, { input: props }, {}, state.context);
     const account: SocialAccountResult = result?.socialEyesConnectAccount;
     logger.info(`socialEyesConnectAccount: connected ${props.platform} account ${account?.id}`);
+    const safeAccount = redactSecrets(account);
     return {
       success: true,
-      data: redactSecrets(account),
+      data: safePayload(safeAccount, props, account),
       tool: 'socialEyesConnectAccount',
       params: redactSecrets(props),
-      instructions: scrubSecretValues(
-        `## Account Connected\nSuccessfully connected ${account.provider} account **${account.name}** (ID: ${account.id}).`,
-        [props.accessToken, props.refreshToken],
+      instructions: safeInstructions(
+        `## Account Connected\nSuccessfully connected ${safeAccount.provider} account **${safeAccount.name}** (ID: ${safeAccount.id}).`,
+        props,
+        account,
       ),
     };
   } catch (error) {
     const secrets = secretValuesFrom(props);
-    logger.error(`socialEyesConnectAccount error: ${scrubErrorForLog(error, secrets)}`);
+    logger.error('socialEyesConnectAccount error', scrubErrorForLog(error, secrets));
     return {
       success: false,
       error: scrubSecretValues(errorMessageOf(error), secrets),
@@ -447,16 +547,21 @@ export const DisconnectAccount: Macro<SocialEyesMacroResult<{ id: string; provid
     const result = await mutateGraph(DISCONNECT_ACCOUNT_MUTATION, { id }, {}, state.context);
     const account = result?.socialEyesDisconnectAccount;
     logger.info(`socialEyesDisconnectAccount: deactivated ${id}`);
+    const safeAccount = redactSecrets(account);
     return {
       success: true,
-      data: redactSecrets(account),
+      data: safePayload(safeAccount, props, account),
       tool: 'socialEyesDisconnectAccount',
       params: redactSecrets(props),
-      instructions: `## Account Disconnected\nAccount **${account?.name}** (${account?.provider}) has been deactivated.`,
+      instructions: safeInstructions(
+        `## Account Disconnected\nAccount **${safeAccount?.name}** (${safeAccount?.provider}) has been deactivated.`,
+        props,
+        account,
+      ),
     };
   } catch (error) {
     const secrets = secretValuesFrom(props);
-    logger.error(`socialEyesDisconnectAccount error: ${scrubErrorForLog(error, secrets)}`);
+    logger.error('socialEyesDisconnectAccount error', scrubErrorForLog(error, secrets));
     return {
       success: false,
       error: scrubSecretValues(errorMessageOf(error), secrets),
@@ -528,22 +633,24 @@ export const LookupAccount: Macro<SocialEyesMacroResult, LookupAccountProps> = a
 
     const result = await queryGraph(LOOKUP_ACCOUNT_QUERY, { input }, {}, state.context);
     const profile = result?.socialEyesLookupAccount ?? null;
+    const safeProfile = redactSecrets(profile);
 
     return {
       success: true,
-      data: redactSecrets(profile),
+      data: safePayload(safeProfile, props, profile),
       tool: 'socialEyesLookupAccount',
       params: redactSecrets(props),
-      instructions: scrubSecretValues(
-        profile
-          ? `## Profile Found: @${profile.username}\n- Name: ${profile.name ?? 'N/A'}\n- Followers: ${profile.followerCount ?? 'N/A'}\n- Verified: ${profile.verified ?? false}\n- URL: ${profile.url ?? 'N/A'}\n- Bio: ${profile.bio ?? 'N/A'}`
+      instructions: safeInstructions(
+        safeProfile
+          ? `## Profile Found: @${safeProfile.username}\n- Name: ${safeProfile.name ?? 'N/A'}\n- Followers: ${safeProfile.followerCount ?? 'N/A'}\n- Verified: ${safeProfile.verified ?? false}\n- URL: ${safeProfile.url ?? 'N/A'}\n- Bio: ${safeProfile.bio ?? 'N/A'}`
           : `No profile found for ${username ?? userId} on ${platform}.`,
-        [accessToken],
+        props,
+        profile,
       ),
     };
   } catch (error) {
     const secrets = secretValuesFrom(props);
-    logger.error(`socialEyesLookupAccount error: ${scrubErrorForLog(error, secrets)}`);
+    logger.error('socialEyesLookupAccount error', scrubErrorForLog(error, secrets));
     return {
       success: false,
       error: scrubSecretValues(errorMessageOf(error), secrets),
