@@ -12,6 +12,68 @@ import {
 } from '../types';
 
 // ─────────────────────────────────────────────
+// Credential redaction
+// ─────────────────────────────────────────────
+
+/**
+ * Placeholder substituted for any value that must not leave this macro layer.
+ */
+const REDACTED_VALUE = '[REDACTED]';
+
+/**
+ * Property names that carry credentials. `tokenExpiry` is included deliberately:
+ * the expiry of a live OAuth token is token metadata, not account data, and the
+ * caller has no legitimate use for it.
+ */
+const SENSITIVE_KEY_PATTERN = /(token|secret|password|passphrase|credential|authorization|bearer|api[-_]?key)/i;
+
+function redactValue(value: unknown, seen: Set<object>): unknown {
+  if (Array.isArray(value)) return value.map((entry) => redactValue(entry, seen));
+  if (value instanceof Date) return value.toISOString();
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value as object)) return REDACTED_VALUE;
+
+  seen.add(value as object);
+  const redacted: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const normalisedKey = key.toLowerCase();
+    // `auth` and `scope` are the provider shapes that can carry a token blob;
+    // `scopes` (the granted-scope list) stays visible and useful.
+    const isSensitive =
+      normalisedKey === 'auth' || normalisedKey === 'scope' || SENSITIVE_KEY_PATTERN.test(key);
+    redacted[key] = isSensitive ? REDACTED_VALUE : redactValue(entry, seen);
+  }
+  return redacted;
+}
+
+/**
+ * Returns a copy of macro inputs that is safe to place in a tool result.
+ *
+ * OAuth material (accessToken, refreshToken, tokenExpiry, provider auth/scope
+ * blobs) is masked; non-secret fields such as platform, providerAccountId,
+ * name, email, avatar and scopes are preserved so results stay debuggable.
+ * Every return path in this file — success, validation failure and thrown
+ * error — must use this instead of echoing `props` verbatim.
+ */
+export function redactAccountParams<T extends object>(params: T): Record<string, unknown> {
+  return redactValue(params, new Set<object>()) as Record<string, unknown>;
+}
+
+/**
+ * Strips literal secret values out of free text. Upstream GraphQL/adapter errors
+ * sometimes echo the credential they rejected; those messages must be scrubbed
+ * before they reach the model or the persisted conversation.
+ */
+export function scrubSecretValues(text: string, secrets: Array<string | undefined>): string {
+  let scrubbed = text;
+  for (const secret of secrets) {
+    if (typeof secret !== 'string' || secret.length < 4) continue;
+    scrubbed = scrubbed.split(secret).join(REDACTED_VALUE);
+  }
+  return scrubbed;
+}
+
+// ─────────────────────────────────────────────
 // Shared GQL fragments
 // ─────────────────────────────────────────────
 
@@ -64,7 +126,7 @@ export const ListAccounts: Macro<SocialEyesMacroResult<SocialAccountResult[]>, L
       success: true,
       data: accounts,
       tool: 'socialEyesAccounts',
-      params: props,
+      params: redactAccountParams(props),
       instructions: `
 ## Connected Social Accounts (${accounts.length})
 
@@ -77,7 +139,7 @@ Use id to reference accounts in listener creation, messaging, and sync operation
     };
   } catch (error) {
     logger.error('socialEyesListAccounts error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesAccounts', params: props };
+    return { success: false, error: (error as Error).message, tool: 'socialEyesAccounts', params: redactAccountParams(props) };
   }
 };
 
@@ -125,7 +187,7 @@ export const GetAccount: Macro<SocialEyesMacroResult<SocialAccountResult | null>
   state: ChatState,
 ): Promise<SocialEyesMacroResult<SocialAccountResult | null>> => {
   const { id } = props;
-  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesAccount', params: props };
+  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesAccount', params: redactAccountParams(props) };
 
   try {
     const result = await queryGraph(GET_ACCOUNT_QUERY, { id }, {}, state.context);
@@ -134,14 +196,14 @@ export const GetAccount: Macro<SocialEyesMacroResult<SocialAccountResult | null>
       success: true,
       data: account,
       tool: 'socialEyesAccount',
-      params: props,
+      params: redactAccountParams(props),
       instructions: account
         ? `## Account: ${account.name} (${account.provider})\n- ID: ${account.id}\n- Active: ${account.isActive}\n- Scopes: ${account.scopes?.join(', ') ?? 'none'}`
         : `No account found with id: ${id}`,
     };
   } catch (error) {
     logger.error('socialEyesGetAccount error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesAccount', params: props };
+    return { success: false, error: (error as Error).message, tool: 'socialEyesAccount', params: redactAccountParams(props) };
   }
 };
 
@@ -189,7 +251,7 @@ export const ConnectAccount: Macro<SocialEyesMacroResult<SocialAccountResult>, C
   const required = ['platform', 'accessToken', 'providerAccountId', 'name'];
   for (const field of required) {
     if (!(props as any)[field]) {
-      return { success: false, error: `${field} is required`, tool: 'socialEyesConnectAccount', params: props };
+      return { success: false, error: `${field} is required`, tool: 'socialEyesConnectAccount', params: redactAccountParams(props) };
     }
   }
 
@@ -201,12 +263,20 @@ export const ConnectAccount: Macro<SocialEyesMacroResult<SocialAccountResult>, C
       success: true,
       data: account,
       tool: 'socialEyesConnectAccount',
-      params: props,
-      instructions: `## Account Connected\nSuccessfully connected ${account.provider} account **${account.name}** (ID: ${account.id}).`,
+      params: redactAccountParams(props),
+      instructions: scrubSecretValues(
+        `## Account Connected\nSuccessfully connected ${account.provider} account **${account.name}** (ID: ${account.id}).`,
+        [props.accessToken, props.refreshToken],
+      ),
     };
   } catch (error) {
     logger.error('socialEyesConnectAccount error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesConnectAccount', params: props };
+    return {
+      success: false,
+      error: scrubSecretValues((error as Error).message, [props.accessToken, props.refreshToken]),
+      tool: 'socialEyesConnectAccount',
+      params: redactAccountParams(props),
+    };
   }
 };
 
@@ -215,7 +285,7 @@ export const ConnectAccountRegistry: MacroComponentDefinition<typeof ConnectAcco
   name: 'socialEyesConnectAccount',
   nameSpace: 'socialeyes-macros',
   version: '1.0.0',
-  description: 'Connect and persist a new social media account using OAuth tokens.',
+  description: 'Connect and persist a new social media account using OAuth tokens. The access and refresh tokens are consumed server-side to establish the connection and are never returned in the result.',
   roles: ['USER'],
   stem: 'socialEyesConnectAccount',
   tags: ['social', 'account', 'connect', 'oauth'],
@@ -223,14 +293,14 @@ export const ConnectAccountRegistry: MacroComponentDefinition<typeof ConnectAcco
     type: 'function',
     function: {
       name: 'socialEyesConnectAccount',
-      description: 'Connect a new social media account using OAuth tokens.',
+      description: 'Connect a new social media account using OAuth tokens. Tokens are write-only: they are consumed to establish and store the connection and are never echoed back in the tool result (only redacted metadata is returned).',
       parameters: {
         type: 'object',
         properties: {
           platform: { type: 'string', description: 'Platform: x or reddit' },
-          accessToken: { type: 'string', description: 'OAuth access token' },
-          refreshToken: { type: 'string', description: 'OAuth refresh token (optional)' },
-          tokenExpiry: { type: 'string', description: 'ISO token expiry date (optional)' },
+          accessToken: { type: 'string', description: 'OAuth access token. Write-only: consumed to establish the connection, never returned.' },
+          refreshToken: { type: 'string', description: 'OAuth refresh token (optional). Write-only: consumed to establish the connection, never returned.' },
+          tokenExpiry: { type: 'string', description: 'ISO token expiry date (optional). Never returned.' },
           providerAccountId: { type: 'string', description: 'Platform-specific account ID' },
           name: { type: 'string', description: 'Display name or handle' },
           email: { type: 'string', description: 'Email address (optional)' },
@@ -263,7 +333,7 @@ export const DisconnectAccount: Macro<SocialEyesMacroResult<{ id: string; provid
   state: ChatState,
 ) => {
   const { id } = props;
-  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesDisconnectAccount', params: props };
+  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesDisconnectAccount', params: redactAccountParams(props) };
 
   try {
     const result = await mutateGraph(DISCONNECT_ACCOUNT_MUTATION, { id }, {}, state.context);
@@ -273,12 +343,12 @@ export const DisconnectAccount: Macro<SocialEyesMacroResult<{ id: string; provid
       success: true,
       data: account,
       tool: 'socialEyesDisconnectAccount',
-      params: props,
+      params: redactAccountParams(props),
       instructions: `## Account Disconnected\nAccount **${account?.name}** (${account?.provider}) has been deactivated.`,
     };
   } catch (error) {
     logger.error('socialEyesDisconnectAccount error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesDisconnectAccount', params: props };
+    return { success: false, error: (error as Error).message, tool: 'socialEyesDisconnectAccount', params: redactAccountParams(props) };
   }
 };
 
@@ -333,8 +403,8 @@ export const LookupAccount: Macro<SocialEyesMacroResult, LookupAccountProps> = a
   state: ChatState,
 ): Promise<SocialEyesMacroResult> => {
   const { platform, username, userId, accessToken } = props;
-  if (!platform) return { success: false, error: 'platform is required', tool: 'socialEyesLookupAccount', params: props };
-  if (!username && !userId) return { success: false, error: 'username or userId is required', tool: 'socialEyesLookupAccount', params: props };
+  if (!platform) return { success: false, error: 'platform is required', tool: 'socialEyesLookupAccount', params: redactAccountParams(props) };
+  if (!username && !userId) return { success: false, error: 'username or userId is required', tool: 'socialEyesLookupAccount', params: redactAccountParams(props) };
 
   try {
     const input: Record<string, unknown> = { platform };
@@ -349,14 +419,22 @@ export const LookupAccount: Macro<SocialEyesMacroResult, LookupAccountProps> = a
       success: true,
       data: profile,
       tool: 'socialEyesLookupAccount',
-      params: props,
-      instructions: profile
-        ? `## Profile Found: @${profile.username}\n- Name: ${profile.name ?? 'N/A'}\n- Followers: ${profile.followerCount ?? 'N/A'}\n- Verified: ${profile.verified ?? false}\n- URL: ${profile.url ?? 'N/A'}\n- Bio: ${profile.bio ?? 'N/A'}`
-        : `No profile found for ${username ?? userId} on ${platform}.`,
+      params: redactAccountParams(props),
+      instructions: scrubSecretValues(
+        profile
+          ? `## Profile Found: @${profile.username}\n- Name: ${profile.name ?? 'N/A'}\n- Followers: ${profile.followerCount ?? 'N/A'}\n- Verified: ${profile.verified ?? false}\n- URL: ${profile.url ?? 'N/A'}\n- Bio: ${profile.bio ?? 'N/A'}`
+          : `No profile found for ${username ?? userId} on ${platform}.`,
+        [accessToken],
+      ),
     };
   } catch (error) {
     logger.error('socialEyesLookupAccount error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesLookupAccount', params: props };
+    return {
+      success: false,
+      error: scrubSecretValues((error as Error).message, [accessToken]),
+      tool: 'socialEyesLookupAccount',
+      params: redactAccountParams(props),
+    };
   }
 };
 
@@ -382,7 +460,7 @@ export const LookupAccountRegistry: MacroComponentDefinition<typeof LookupAccoun
           platform: { type: 'string', description: 'Platform to search: x, reddit, facebook, or instagram' },
           username: { type: 'string', description: 'Handle or username to look up (without @ or u/)' },
           userId: { type: 'string', description: 'Platform-specific user ID (alternative to username)' },
-          accessToken: { type: 'string', description: 'Optional access token for authenticated lookup' },
+          accessToken: { type: 'string', description: 'Optional access token for authenticated lookup. Write-only: never returned.' },
         },
         required: ['platform'],
       },
