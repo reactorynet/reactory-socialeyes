@@ -37,6 +37,8 @@ import {
   DisconnectAccountRegistry,
   LookupAccount,
   LookupAccountRegistry,
+  redactAccountParams,
+  scrubSecretValues,
 } from '../../ai/macro/accounts/macro';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -357,5 +359,151 @@ describe('LookupAccountRegistry', () => {
     expect(LookupAccountRegistry.name).toBe('socialEyesLookupAccount');
     expect(LookupAccountRegistry.nameSpace).toBe('socialeyes-macros');
     expect(LookupAccountRegistry.tools[0].function.parameters.required).toContain('platform');
+  });
+});
+
+// ─── Credential redaction ─────────────────────────────────────────────────────
+//
+// Regression guard for REACTORY-302016408/20261113/638973579: the account macros
+// used to return `params: props` verbatim, which echoed the OAuth access and
+// refresh tokens into the tool result, the model context and the persisted chat.
+
+describe('Account macro credential redaction', () => {
+  const secrets = {
+    accessToken: 'tok-access-ABC123',
+    refreshToken: 'tok-refresh-XYZ789',
+    tokenExpiry: '2030-01-01T00:00:00.000Z',
+  };
+
+  const connectProps = {
+    platform: 'x',
+    providerAccountId: 'x-123',
+    name: 'Sandy',
+    email: 'sandy@example.com',
+    avatar: 'https://example.com/sandy.png',
+    scopes: ['read', 'write'],
+    ...secrets,
+  };
+
+  const expectNoSecrets = (result: unknown) => {
+    const serialised = JSON.stringify(result);
+    expect(serialised).not.toContain(secrets.accessToken);
+    expect(serialised).not.toContain(secrets.refreshToken);
+    expect(serialised).not.toContain(secrets.tokenExpiry);
+  };
+
+  it('does not echo tokens from socialEyesConnectAccount on success', async () => {
+    mockMutateGraph.mockResolvedValueOnce({ socialEyesConnectAccount: sampleAccount } as any);
+
+    const result = await ConnectAccount(connectProps, mockState);
+
+    expect(result.success).toBe(true);
+    expectNoSecrets(result);
+
+    const params = result.params as Record<string, any>;
+    expect(params.accessToken).toBe('[REDACTED]');
+    expect(params.refreshToken).toBe('[REDACTED]');
+    expect(params.tokenExpiry).toBe('[REDACTED]');
+    // non-secret inputs stay available for debugging
+    expect(params.platform).toBe('x');
+    expect(params.providerAccountId).toBe('x-123');
+    expect(params.name).toBe('Sandy');
+    expect(params.email).toBe('sandy@example.com');
+    expect(params.avatar).toBe('https://example.com/sandy.png');
+    expect(params.scopes).toEqual(['read', 'write']);
+    // and the connected account is still returned
+    expect((result.data as any).id).toBe('acc-1');
+  });
+
+  it('does not echo tokens from socialEyesConnectAccount when the mutation throws', async () => {
+    mockMutateGraph.mockRejectedValueOnce(
+      new Error(`Auth failed for access token ${secrets.accessToken}`) as never,
+    );
+
+    const result = await ConnectAccount(connectProps, mockState);
+
+    expect(result.success).toBe(false);
+    expectNoSecrets(result);
+    expect(result.error).not.toContain(secrets.accessToken);
+    expect(result.error).toContain('[REDACTED]');
+    expect((result.params as Record<string, any>).platform).toBe('x');
+    expect((result.params as Record<string, any>).name).toBe('Sandy');
+  });
+
+  it('does not echo tokens from socialEyesConnectAccount when a required input is missing', async () => {
+    const result = await ConnectAccount({ ...connectProps, name: '' }, mockState);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('name is required');
+    expect(mockMutateGraph).not.toHaveBeenCalled();
+    expectNoSecrets(result);
+  });
+
+  it('does not echo tokens from socialEyesAccount', async () => {
+    mockQueryGraph.mockResolvedValueOnce({ socialEyesAccount: sampleAccount } as any);
+
+    // Callers can attach credential material to the props object; it must not be echoed.
+    const result = await GetAccount({ id: 'acc-1', ...secrets } as any, mockState);
+
+    expect(result.success).toBe(true);
+    expectNoSecrets(result);
+    expect((result.params as Record<string, any>).id).toBe('acc-1');
+    expect((result.data as any).name).toBe('Test User');
+  });
+
+  it('does not echo tokens from socialEyesDisconnectAccount', async () => {
+    mockMutateGraph.mockResolvedValueOnce({
+      socialEyesDisconnectAccount: { id: 'acc-1', provider: 'x', name: 'Sandy', isActive: false },
+    } as any);
+
+    const result = await DisconnectAccount({ id: 'acc-1', ...secrets } as any, mockState);
+
+    expect(result.success).toBe(true);
+    expectNoSecrets(result);
+    expect((result.params as Record<string, any>).id).toBe('acc-1');
+  });
+
+  it('does not echo the lookup access token on success or failure', async () => {
+    mockQueryGraph.mockResolvedValueOnce({ socialEyesLookupAccount: { id: 'p-1', username: 'jane' } } as any);
+
+    const okResult = await LookupAccount(
+      { platform: 'x', username: 'jane', accessToken: secrets.accessToken },
+      mockState,
+    );
+    expect(okResult.success).toBe(true);
+    expectNoSecrets(okResult);
+    expect((okResult.params as Record<string, any>).username).toBe('jane');
+
+    mockQueryGraph.mockRejectedValueOnce(
+      new Error(`401 for token ${secrets.accessToken}`) as never,
+    );
+    const failResult = await LookupAccount(
+      { platform: 'x', username: 'jane', accessToken: secrets.accessToken },
+      mockState,
+    );
+    expect(failResult.success).toBe(false);
+    expectNoSecrets(failResult);
+  });
+
+  it('redacts nested auth / scope blobs while keeping scopes', () => {
+    const redacted = redactAccountParams({
+      platform: 'x',
+      scopes: ['read'],
+      auth: { bearer: secrets.accessToken },
+      scope: 'read write',
+      credentials: { accessToken: secrets.accessToken },
+    });
+
+    expect(JSON.stringify(redacted)).not.toContain(secrets.accessToken);
+    expect(redacted.platform).toBe('x');
+    expect(redacted.scopes).toEqual(['read']);
+    expect(redacted.auth).toBe('[REDACTED]');
+    expect(redacted.scope).toBe('[REDACTED]');
+  });
+
+  it('scrubs literal secrets out of free text', () => {
+    expect(scrubSecretValues(`bad token ${secrets.accessToken}`, [secrets.accessToken])).toBe(
+      'bad token [REDACTED]',
+    );
   });
 });
