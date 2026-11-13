@@ -623,14 +623,14 @@ describe('Account macro credential redaction', () => {
   it('does not throw when a secret contains a lone surrogate', async () => {
     // encodeURIComponent throws URIError on a lone surrogate; the scrubber must
     // fall back to the raw form rather than break the error envelope.
-    const malformedToken = 'abcd\ud800';
+    const malformedToken = 'tok-malformed-\ud800';
     mockMutateGraph.mockRejectedValueOnce(new Error(`bad ${malformedToken}`) as never);
 
     const result = await ConnectAccount({ ...connectProps, accessToken: malformedToken }, mockState);
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('[REDACTED]');
-    expect(JSON.stringify(result)).not.toContain('abcd');
+    expect(JSON.stringify(result)).not.toContain('tok-malformed');
   });
 
   it('does not leak a token that the server echoed into a display field', async () => {
@@ -646,6 +646,22 @@ describe('Account macro credential redaction', () => {
     expect(result.success).toBe(true);
     expect(JSON.stringify(result)).not.toContain(secrets.accessToken);
     expect(result.instructions).toContain('[REDACTED]');
+  });
+
+  it('does not mangle legitimate data when the credential is short', async () => {
+    // A 4-char token such as 'read' must not redact the granted scopes list, the
+    // account name or the email: value-scrubbing is a substring replace, so the
+    // needle floor has to keep short values out of the scan.
+    mockQueryGraph.mockResolvedValueOnce({ socialEyesAccount: sampleAccount } as any);
+
+    const result = await GetAccount({ id: 'acc-1', accessToken: 'read', refreshToken: 'Test' } as any, mockState);
+
+    expect(result.success).toBe(true);
+    expect((result.data as any).scopes).toEqual(['read', 'write']);
+    expect((result.data as any).name).toBe('Test User');
+    expect((result.data as any).email).toBe('test@example.com');
+    expect(result.instructions).toContain('Test User');
+    expect(result.instructions).toContain('read, write');
   });
 
   it('scrubs the token out of the message handed to the logger', async () => {

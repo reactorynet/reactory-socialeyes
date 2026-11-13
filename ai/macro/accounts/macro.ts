@@ -21,11 +21,17 @@ import {
 const REDACTED_VALUE = '[REDACTED]';
 
 /**
- * Shortest secret value worth scanning for in free text. Shorter values match far
- * too much ordinary prose to be a useful scrub, so values below this length are
- * accepted as a residual risk — real OAuth tokens are always longer.
+ * Shortest secret value worth scanning for in free text.
+ *
+ * This is a deliberate trade-off. Value-scrubbing is a substring replace over
+ * every string in a result, so a short or low-entropy needle mangles legitimate
+ * data (`accessToken: 'read'` would redact the granted scopes list). Real OAuth
+ * tokens are far longer than this, so a higher floor costs nothing in practice.
+ *
+ * Credential *fields* are still masked by key at any length — this floor only
+ * governs the defence-in-depth scrub of values echoed into other strings.
  */
-const MIN_SCRUB_SECRET_LENGTH = 4;
+const MIN_SCRUB_SECRET_LENGTH = 12;
 
 /**
  * Property names that carry credentials.
@@ -109,6 +115,8 @@ export function redactSecrets<T>(value: T): T {
  * out of free text (error messages, instruction strings, log lines).
  */
 function secretValuesFrom(source: unknown, depth = 0): string[] {
+  // Bounded so a pathological payload cannot make the needle scan expensive; a
+  // credential nested this deep is not a shape these macros produce.
   if (depth > 4 || source === null || typeof source !== 'object') return [];
 
   const secrets: string[] = [];
@@ -232,22 +240,31 @@ function safeInstructions(text: string, ...sources: unknown[]): string {
  * Key-based redaction cannot catch a credential the server echoed back into an
  * ordinary display field, so payloads go through this as well.
  */
-function scrubDeepValues(value: unknown, secrets: string[]): unknown {
+function scrubDeepValues(value: unknown, secrets: string[], ancestors: WeakSet<object>): unknown {
   if (typeof value === 'string') return scrubSecretValues(value, secrets);
   if (value === null || typeof value !== 'object') return value;
   if (value instanceof Date) return value.toISOString();
-  if (Array.isArray(value)) return value.map((entry) => scrubDeepValues(entry, secrets));
+  if (ancestors.has(value as object)) return REDACTED_VALUE;
 
-  const scrubbed: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    Object.defineProperty(scrubbed, key, {
-      value: scrubDeepValues(entry, secrets),
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
+  ancestors.add(value as object);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((entry) => scrubDeepValues(entry, secrets, ancestors));
+    }
+
+    const scrubbed: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      Object.defineProperty(scrubbed, key, {
+        value: scrubDeepValues(entry, secrets, ancestors),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    return scrubbed;
+  } finally {
+    ancestors.delete(value as object);
   }
-  return scrubbed;
 }
 
 /**
@@ -256,7 +273,7 @@ function scrubDeepValues(value: unknown, secrets: string[]): unknown {
  */
 function safePayload<T>(value: T, ...sources: unknown[]): T {
   const secrets = sources.flatMap((source) => secretValuesFrom(source));
-  return scrubDeepValues(value, secrets) as T;
+  return scrubDeepValues(value, secrets, new WeakSet<object>()) as T;
 }
 
 // ─────────────────────────────────────────────
@@ -310,6 +327,9 @@ export const ListAccounts: Macro<SocialEyesMacroResult<SocialAccountResult[]>, L
 
     return {
       success: true,
+      // Only `props` is a usable needle source here: a token echoed into a row's
+      // display field is not derivable from any key, so passing `accounts` would
+      // add a traversal without adding coverage.
       data: safePayload(redactSecrets(accounts), props),
       tool: 'socialEyesAccounts',
       params: redactSecrets(props),
