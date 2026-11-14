@@ -12,6 +12,29 @@ import {
 } from '../types';
 
 // ─────────────────────────────────────────────
+// Credential redaction
+// ─────────────────────────────────────────────
+//
+// The helpers live in ../redaction so every macro in this module can share one
+// implementation — the bug this closes was "the next macro copies the
+// `params: props` echo", and a fix private to this file cannot reach it.
+
+import {
+  REDACTED_VALUE,
+  redactSecrets,
+  scrubSecretValues,
+  secretValuesFrom,
+  safePayload,
+  safeInstructions,
+  errorMessageOf,
+  scrubErrorForLog,
+} from '../redaction';
+
+// Re-exported for callers (and the unit tests) that imported them from here.
+export { REDACTED_VALUE, redactSecrets, scrubSecretValues };
+
+
+// ─────────────────────────────────────────────
 // Shared GQL fragments
 // ─────────────────────────────────────────────
 
@@ -62,9 +85,12 @@ export const ListAccounts: Macro<SocialEyesMacroResult<SocialAccountResult[]>, L
 
     return {
       success: true,
-      data: accounts,
+      // Only `props` is a usable needle source: a token echoed into a row's
+      // display field is not derivable from any key, so the payload itself adds a
+      // traversal without adding coverage.
+      data: safePayload(accounts, props),
       tool: 'socialEyesAccounts',
-      params: props,
+      params: redactSecrets(props),
       instructions: `
 ## Connected Social Accounts (${accounts.length})
 
@@ -76,8 +102,14 @@ Use id to reference accounts in listener creation, messaging, and sync operation
 `,
     };
   } catch (error) {
-    logger.error('socialEyesListAccounts error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesAccounts', params: props };
+    const secrets = secretValuesFrom(props);
+    logger.error('socialEyesListAccounts error', scrubErrorForLog(error, secrets));
+    return {
+      success: false,
+      error: scrubSecretValues(errorMessageOf(error), secrets),
+      tool: 'socialEyesAccounts',
+      params: redactSecrets(props),
+    };
   }
 };
 
@@ -125,23 +157,36 @@ export const GetAccount: Macro<SocialEyesMacroResult<SocialAccountResult | null>
   state: ChatState,
 ): Promise<SocialEyesMacroResult<SocialAccountResult | null>> => {
   const { id } = props;
-  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesAccount', params: props };
+  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesAccount', params: redactSecrets(props) };
 
   try {
     const result = await queryGraph(GET_ACCOUNT_QUERY, { id }, {}, state.context);
     const account: SocialAccountResult | null = result?.socialEyesAccount ?? null;
+    // One traversal masks credential keys and scrubs credential values that the
+    // server echoed into an ordinary field. `props` is the only needle source: the
+    // account payload carries no credential keys (see ACCOUNT_FIELDS).
+    const safeAccount = safePayload(account, props) as SocialAccountResult | null;
     return {
       success: true,
-      data: account,
+      data: safeAccount,
       tool: 'socialEyesAccount',
-      params: props,
-      instructions: account
-        ? `## Account: ${account.name} (${account.provider})\n- ID: ${account.id}\n- Active: ${account.isActive}\n- Scopes: ${account.scopes?.join(', ') ?? 'none'}`
-        : `No account found with id: ${id}`,
+      params: redactSecrets(props),
+      instructions: safeInstructions(
+        safeAccount
+          ? `## Account: ${safeAccount.name} (${safeAccount.provider})\n- ID: ${safeAccount.id}\n- Active: ${safeAccount.isActive}\n- Scopes: ${safeAccount.scopes?.join(', ') ?? 'none'}`
+          : `No account found with id: ${id}`,
+        props,
+      ),
     };
   } catch (error) {
-    logger.error('socialEyesGetAccount error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesAccount', params: props };
+    const secrets = secretValuesFrom(props);
+    logger.error('socialEyesGetAccount error', scrubErrorForLog(error, secrets));
+    return {
+      success: false,
+      error: scrubSecretValues(errorMessageOf(error), secrets),
+      tool: 'socialEyesAccount',
+      params: redactSecrets(props),
+    };
   }
 };
 
@@ -189,24 +234,50 @@ export const ConnectAccount: Macro<SocialEyesMacroResult<SocialAccountResult>, C
   const required = ['platform', 'accessToken', 'providerAccountId', 'name'];
   for (const field of required) {
     if (!(props as any)[field]) {
-      return { success: false, error: `${field} is required`, tool: 'socialEyesConnectAccount', params: props };
+      return { success: false, error: `${field} is required`, tool: 'socialEyesConnectAccount', params: redactSecrets(props) };
     }
   }
 
   try {
     const result = await mutateGraph(CONNECT_ACCOUNT_MUTATION, { input: props }, {}, state.context);
-    const account: SocialAccountResult = result?.socialEyesConnectAccount;
-    logger.info(`socialEyesConnectAccount: connected ${props.platform} account ${account?.id}`);
+    const account: SocialAccountResult | null = result?.socialEyesConnectAccount ?? null;
+
+    // A null account is a real outcome (the mutation resolved without a payload),
+    // not a success. Reading `account.provider` unguarded threw a TypeError inside
+    // the try, which surfaced to the model as "Cannot read properties of null" and
+    // hid the actual result.
+    if (!account) {
+      return {
+        success: false,
+        error: 'socialEyesConnectAccount returned no account; the connection was not confirmed',
+        tool: 'socialEyesConnectAccount',
+        params: redactSecrets(props),
+      };
+    }
+
+    logger.info(`socialEyesConnectAccount: connected ${props.platform} account ${account.id}`);
+
+    // One traversal: credential keys masked and values from `props` scrubbed.
+    const safeAccount = safePayload(account, props);
     return {
       success: true,
-      data: account,
+      data: safeAccount,
       tool: 'socialEyesConnectAccount',
-      params: props,
-      instructions: `## Account Connected\nSuccessfully connected ${account.provider} account **${account.name}** (ID: ${account.id}).`,
+      params: redactSecrets(props),
+      instructions: safeInstructions(
+        `## Account Connected\nSuccessfully connected ${safeAccount.provider} account **${safeAccount.name}** (ID: ${safeAccount.id}).`,
+        props,
+      ),
     };
   } catch (error) {
-    logger.error('socialEyesConnectAccount error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesConnectAccount', params: props };
+    const secrets = secretValuesFrom(props);
+    logger.error('socialEyesConnectAccount error', scrubErrorForLog(error, secrets));
+    return {
+      success: false,
+      error: scrubSecretValues(errorMessageOf(error), secrets),
+      tool: 'socialEyesConnectAccount',
+      params: redactSecrets(props),
+    };
   }
 };
 
@@ -215,7 +286,7 @@ export const ConnectAccountRegistry: MacroComponentDefinition<typeof ConnectAcco
   name: 'socialEyesConnectAccount',
   nameSpace: 'socialeyes-macros',
   version: '1.0.0',
-  description: 'Connect and persist a new social media account using OAuth tokens.',
+  description: 'Connect and persist a new social media account using OAuth tokens. The access and refresh tokens are consumed server-side to establish the connection and are never returned in the result.',
   roles: ['USER'],
   stem: 'socialEyesConnectAccount',
   tags: ['social', 'account', 'connect', 'oauth'],
@@ -223,14 +294,14 @@ export const ConnectAccountRegistry: MacroComponentDefinition<typeof ConnectAcco
     type: 'function',
     function: {
       name: 'socialEyesConnectAccount',
-      description: 'Connect a new social media account using OAuth tokens.',
+      description: 'Connect a new social media account using OAuth tokens. Tokens are write-only: they are consumed to establish and store the connection and are never echoed back in the tool result (only redacted metadata is returned).',
       parameters: {
         type: 'object',
         properties: {
           platform: { type: 'string', description: 'Platform: x or reddit' },
-          accessToken: { type: 'string', description: 'OAuth access token' },
-          refreshToken: { type: 'string', description: 'OAuth refresh token (optional)' },
-          tokenExpiry: { type: 'string', description: 'ISO token expiry date (optional)' },
+          accessToken: { type: 'string', description: 'OAuth access token. Write-only: consumed to establish the connection, never returned.' },
+          refreshToken: { type: 'string', description: 'OAuth refresh token (optional). Write-only: consumed to establish the connection, never returned.' },
+          tokenExpiry: { type: 'string', description: 'ISO token expiry date (optional). Never returned.' },
           providerAccountId: { type: 'string', description: 'Platform-specific account ID' },
           name: { type: 'string', description: 'Display name or handle' },
           email: { type: 'string', description: 'Email address (optional)' },
@@ -263,22 +334,34 @@ export const DisconnectAccount: Macro<SocialEyesMacroResult<{ id: string; provid
   state: ChatState,
 ) => {
   const { id } = props;
-  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesDisconnectAccount', params: props };
+  if (!id) return { success: false, error: 'id is required', tool: 'socialEyesDisconnectAccount', params: redactSecrets(props) };
 
   try {
     const result = await mutateGraph(DISCONNECT_ACCOUNT_MUTATION, { id }, {}, state.context);
-    const account = result?.socialEyesDisconnectAccount;
+    const account = result?.socialEyesDisconnectAccount ?? null;
     logger.info(`socialEyesDisconnectAccount: deactivated ${id}`);
+
+    // One traversal: credential keys masked and values from `props` scrubbed.
+    const safeAccount = safePayload(account, props);
     return {
       success: true,
-      data: account,
+      data: safeAccount,
       tool: 'socialEyesDisconnectAccount',
-      params: props,
-      instructions: `## Account Disconnected\nAccount **${account?.name}** (${account?.provider}) has been deactivated.`,
+      params: redactSecrets(props),
+      instructions: safeInstructions(
+        `## Account Disconnected\nAccount **${safeAccount?.name}** (${safeAccount?.provider}) has been deactivated.`,
+        props,
+      ),
     };
   } catch (error) {
-    logger.error('socialEyesDisconnectAccount error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesDisconnectAccount', params: props };
+    const secrets = secretValuesFrom(props);
+    logger.error('socialEyesDisconnectAccount error', scrubErrorForLog(error, secrets));
+    return {
+      success: false,
+      error: scrubSecretValues(errorMessageOf(error), secrets),
+      tool: 'socialEyesDisconnectAccount',
+      params: redactSecrets(props),
+    };
   }
 };
 
@@ -333,8 +416,8 @@ export const LookupAccount: Macro<SocialEyesMacroResult, LookupAccountProps> = a
   state: ChatState,
 ): Promise<SocialEyesMacroResult> => {
   const { platform, username, userId, accessToken } = props;
-  if (!platform) return { success: false, error: 'platform is required', tool: 'socialEyesLookupAccount', params: props };
-  if (!username && !userId) return { success: false, error: 'username or userId is required', tool: 'socialEyesLookupAccount', params: props };
+  if (!platform) return { success: false, error: 'platform is required', tool: 'socialEyesLookupAccount', params: redactSecrets(props) };
+  if (!username && !userId) return { success: false, error: 'username or userId is required', tool: 'socialEyesLookupAccount', params: redactSecrets(props) };
 
   try {
     const input: Record<string, unknown> = { platform };
@@ -345,18 +428,32 @@ export const LookupAccount: Macro<SocialEyesMacroResult, LookupAccountProps> = a
     const result = await queryGraph(LOOKUP_ACCOUNT_QUERY, { input }, {}, state.context);
     const profile = result?.socialEyesLookupAccount ?? null;
 
+    // One traversal: credential keys masked and values from `props` scrubbed.
+    // `profile` is not a needle source — the lookup selection carries no
+    // credential keys, so it would only cost a traversal.
+    const safeProfile = safePayload(profile, props);
+
     return {
       success: true,
-      data: profile,
+      data: safeProfile,
       tool: 'socialEyesLookupAccount',
-      params: props,
-      instructions: profile
-        ? `## Profile Found: @${profile.username}\n- Name: ${profile.name ?? 'N/A'}\n- Followers: ${profile.followerCount ?? 'N/A'}\n- Verified: ${profile.verified ?? false}\n- URL: ${profile.url ?? 'N/A'}\n- Bio: ${profile.bio ?? 'N/A'}`
-        : `No profile found for ${username ?? userId} on ${platform}.`,
+      params: redactSecrets(props),
+      instructions: safeInstructions(
+        safeProfile
+          ? `## Profile Found: @${safeProfile.username}\n- Name: ${safeProfile.name ?? 'N/A'}\n- Followers: ${safeProfile.followerCount ?? 'N/A'}\n- Verified: ${safeProfile.verified ?? false}\n- URL: ${safeProfile.url ?? 'N/A'}\n- Bio: ${safeProfile.bio ?? 'N/A'}`
+          : `No profile found for ${username ?? userId} on ${platform}.`,
+        props,
+      ),
     };
   } catch (error) {
-    logger.error('socialEyesLookupAccount error:', error);
-    return { success: false, error: (error as Error).message, tool: 'socialEyesLookupAccount', params: props };
+    const secrets = secretValuesFrom(props);
+    logger.error('socialEyesLookupAccount error', scrubErrorForLog(error, secrets));
+    return {
+      success: false,
+      error: scrubSecretValues(errorMessageOf(error), secrets),
+      tool: 'socialEyesLookupAccount',
+      params: redactSecrets(props),
+    };
   }
 };
 
@@ -382,7 +479,7 @@ export const LookupAccountRegistry: MacroComponentDefinition<typeof LookupAccoun
           platform: { type: 'string', description: 'Platform to search: x, reddit, facebook, or instagram' },
           username: { type: 'string', description: 'Handle or username to look up (without @ or u/)' },
           userId: { type: 'string', description: 'Platform-specific user ID (alternative to username)' },
-          accessToken: { type: 'string', description: 'Optional access token for authenticated lookup' },
+          accessToken: { type: 'string', description: 'Optional access token for authenticated lookup. Write-only: never returned.' },
         },
         required: ['platform'],
       },
