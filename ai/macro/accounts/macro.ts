@@ -14,267 +14,25 @@ import {
 // ─────────────────────────────────────────────
 // Credential redaction
 // ─────────────────────────────────────────────
+//
+// The helpers live in ../redaction so every macro in this module can share one
+// implementation — the bug this closes was "the next macro copies the
+// `params: props` echo", and a fix private to this file cannot reach it.
 
-/**
- * Placeholder substituted for any value that must not leave this macro layer.
- */
-const REDACTED_VALUE = '[REDACTED]';
+import {
+  REDACTED_VALUE,
+  redactSecrets,
+  scrubSecretValues,
+  secretValuesFrom,
+  safePayload,
+  safeInstructions,
+  errorMessageOf,
+  scrubErrorForLog,
+} from '../redaction';
 
-/**
- * Shortest secret value worth scanning for in free text.
- *
- * This is a deliberate trade-off. Value-scrubbing is a substring replace over
- * every string in a result, so a short or low-entropy needle mangles legitimate
- * data (`accessToken: 'read'` would redact the granted scopes list). Real OAuth
- * tokens are far longer than this, so a higher floor costs nothing in practice.
- *
- * Credential *fields* are still masked by key at any length — this floor only
- * governs the defence-in-depth scrub of values echoed into other strings.
- */
-const MIN_SCRUB_SECRET_LENGTH = 12;
+// Re-exported for callers (and the unit tests) that imported them from here.
+export { REDACTED_VALUE, redactSecrets, scrubSecretValues };
 
-/**
- * Property names that carry credentials.
- *
- * `tokenExpiry` is matched deliberately: the expiry of a live OAuth token is
- * token metadata, not account data, and the caller has no legitimate use for it.
- *
- * `auth` and `scope` are special-cased exactly (not by pattern) because they are
- * the provider shapes that can carry a token blob, while `scopes` — the granted
- * scope list — must stay visible and useful.
- */
-const SENSITIVE_KEY_PATTERN =
-  /(token|secret|password|passphrase|credential|authorization|bearer|api[-_]?key|oauth|private[-_]?key)/i;
-
-function isSensitiveKey(key: string): boolean {
-  const normalisedKey = key.toLowerCase();
-  return normalisedKey === 'auth' || normalisedKey === 'scope' || SENSITIVE_KEY_PATTERN.test(key);
-}
-
-const REGEXP_SPECIAL_CHARACTERS = '\\^$.*+?()[]{}|';
-
-function escapeRegExp(value: string): string {
-  let escaped = '';
-  for (const character of value) {
-    escaped += REGEXP_SPECIAL_CHARACTERS.includes(character) ? `\\${character}` : character;
-  }
-  return escaped;
-}
-
-/**
- * Deep-copies `value`, replacing anything credential-bearing with a placeholder.
- *
- * `ancestors` holds only the objects on the *current* path, so genuine cycles
- * (including self-referencing arrays) terminate, while shared acyclic references
- * are still copied in full rather than being mistaken for a cycle.
- */
-function redactValue(value: unknown, ancestors: WeakSet<object>): unknown {
-  if (value === null || typeof value !== 'object') return value;
-  if (value instanceof Date) return value.toISOString();
-  if (ancestors.has(value as object)) return REDACTED_VALUE;
-
-  ancestors.add(value as object);
-  try {
-    if (Array.isArray(value)) return value.map((entry) => redactValue(entry, ancestors));
-
-    const redacted: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      // defineProperty rather than assignment so a literal `__proto__` key becomes
-      // an own enumerable property instead of rewriting the result's prototype.
-      Object.defineProperty(redacted, key, {
-        value: isSensitiveKey(key) ? REDACTED_VALUE : redactValue(entry, ancestors),
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
-    }
-    return redacted;
-  } finally {
-    ancestors.delete(value as object);
-  }
-}
-
-/**
- * Returns a redacted deep copy of `value`, safe to place in a tool result.
- *
- * Use this for everything a macro hands back — the echoed `params`, the `data`
- * payload, and any nested object. OAuth material (accessToken, refreshToken,
- * tokenExpiry, provider auth/scope blobs, private keys) is masked; ordinary
- * fields such as platform, providerAccountId, name, email, avatar and scopes are
- * preserved so results stay debuggable.
- *
- * Every return path in this file — success, validation failure and thrown
- * error — must go through this instead of echoing `props` or `data` verbatim.
- */
-export function redactSecrets<T>(value: T): T {
-  return redactValue(value, new WeakSet<object>()) as T;
-}
-
-/**
- * Collects the credential values carried by an object so they can be scrubbed
- * out of free text (error messages, instruction strings, log lines).
- */
-function secretValuesFrom(source: unknown, depth = 0): string[] {
-  // Bounded so a pathological payload cannot make the needle scan expensive; a
-  // credential nested this deep is not a shape these macros produce.
-  if (depth > 4 || source === null || typeof source !== 'object') return [];
-
-  const secrets: string[] = [];
-  for (const [key, entry] of Object.entries(source as Record<string, unknown>)) {
-    if (typeof entry === 'string') {
-      // `tokenExpiry` is masked in results but is not a secret value: scrubbing an
-      // ISO timestamp out of a message would mangle unrelated diagnostics.
-      if (isSensitiveKey(key) && !/expir/i.test(key)) secrets.push(entry);
-    } else {
-      secrets.push(...secretValuesFrom(entry, depth + 1));
-    }
-  }
-  return secrets;
-}
-
-/**
- * URL-encodes a secret so its encoded form can be scrubbed too. Returns null when
- * the value cannot be encoded — a lone surrogate, which a model-supplied or
- * corrupted token can legitimately contain — so the caller falls back to
- * scrubbing the raw form only instead of throwing out of an error handler.
- */
-function encodeVariant(value: string): string | null {
-  try {
-    return encodeURIComponent(value);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Strips secret values out of free text. Upstream GraphQL/adapter errors
- * sometimes echo the credential they rejected, and those messages travel to the
- * model, the persisted conversation and the log files.
- *
- * Matching is case-insensitive and covers both the raw value and its
- * URL-encoded form, because a token sent as a query parameter arrives encoded.
- */
-export function scrubSecretValues(text: unknown, secrets: Array<string | undefined>): string {
-  if (typeof text !== 'string') return '';
-
-  let scrubbed = text;
-  for (const secret of secrets) {
-    if (typeof secret !== 'string' || secret.length < MIN_SCRUB_SECRET_LENGTH) continue;
-
-    for (const variant of new Set([secret, encodeVariant(secret)])) {
-      if (!variant) continue;
-      scrubbed = scrubbed.replace(new RegExp(escapeRegExp(variant), 'gi'), REDACTED_VALUE);
-    }
-  }
-  return scrubbed;
-}
-
-/**
- * Normalises anything that can be thrown into a message string, so an error
- * handler cannot itself fail on a non-Error rejection.
- */
-function errorMessageOf(error: unknown): string {
-  if (typeof error === 'string') return error;
-  if (error instanceof Error) return error.message;
-  if (error !== null && typeof error === 'object') {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === 'string') return message;
-  }
-  return error === undefined || error === null ? 'Unknown error' : String(error);
-}
-
-/**
- * Builds a structured, scrubbed, log-safe rendering of an error.
- *
- * The message and stack are scrubbed, and the detail Apollo attaches
- * (`graphQLErrors`, `networkError`) is serialised and scrubbed rather than
- * dropped — that is where the actionable auth failure text lives.
- */
-function scrubErrorForLog(
-  error: unknown,
-  secrets: Array<string | undefined>,
-): Record<string, unknown> {
-  const entry: Record<string, unknown> = {
-    name: error instanceof Error ? error.name : typeof error,
-    message: scrubSecretValues(errorMessageOf(error), secrets),
-  };
-
-  if (error instanceof Error && typeof error.stack === 'string') {
-    entry.stack = scrubSecretValues(error.stack, secrets);
-  }
-
-  const detail = error as { graphQLErrors?: unknown; networkError?: unknown } | null;
-  for (const key of ['graphQLErrors', 'networkError'] as const) {
-    const value = detail?.[key];
-    if (value === undefined) continue;
-    let serialised: string;
-    try {
-      serialised = JSON.stringify(value) ?? String(value);
-    } catch {
-      serialised = String(value);
-    }
-    entry[key] = scrubSecretValues(serialised, secrets);
-  }
-
-  return entry;
-}
-
-/**
- * Final guard for any prose a macro returns.
- *
- * Instructions are built from the already-redacted payload, so credential *keys*
- * are gone; this additionally scrubs credential *values* from every source in
- * play (the caller's props and the server payload) in case one was echoed into a
- * display field.
- */
-function safeInstructions(text: string, ...sources: unknown[]): string {
-  return scrubSecretValues(
-    text,
-    sources.flatMap((source) => secretValuesFrom(source)),
-  );
-}
-
-/**
- * Replaces secret values in every string inside `value`, recursively.
- *
- * Key-based redaction cannot catch a credential the server echoed back into an
- * ordinary display field, so payloads go through this as well.
- */
-function scrubDeepValues(value: unknown, secrets: string[], ancestors: WeakSet<object>): unknown {
-  if (typeof value === 'string') return scrubSecretValues(value, secrets);
-  if (value === null || typeof value !== 'object') return value;
-  if (value instanceof Date) return value.toISOString();
-  if (ancestors.has(value as object)) return REDACTED_VALUE;
-
-  ancestors.add(value as object);
-  try {
-    if (Array.isArray(value)) {
-      return value.map((entry) => scrubDeepValues(entry, secrets, ancestors));
-    }
-
-    const scrubbed: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      Object.defineProperty(scrubbed, key, {
-        value: scrubDeepValues(entry, secrets, ancestors),
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
-    }
-    return scrubbed;
-  } finally {
-    ancestors.delete(value as object);
-  }
-}
-
-/**
- * Prepares a payload for the tool result: credential keys masked, then any
- * credential values from the given sources scrubbed out of every string field.
- */
-function safePayload<T>(value: T, ...sources: unknown[]): T {
-  const secrets = sources.flatMap((source) => secretValuesFrom(source));
-  return scrubDeepValues(value, secrets, new WeakSet<object>()) as T;
-}
 
 // ─────────────────────────────────────────────
 // Shared GQL fragments
@@ -327,10 +85,10 @@ export const ListAccounts: Macro<SocialEyesMacroResult<SocialAccountResult[]>, L
 
     return {
       success: true,
-      // Only `props` is a usable needle source here: a token echoed into a row's
-      // display field is not derivable from any key, so passing `accounts` would
-      // add a traversal without adding coverage.
-      data: safePayload(redactSecrets(accounts), props),
+      // Only `props` is a usable needle source: a token echoed into a row's
+      // display field is not derivable from any key, so the payload itself adds a
+      // traversal without adding coverage.
+      data: safePayload(accounts, props),
       tool: 'socialEyesAccounts',
       params: redactSecrets(props),
       instructions: `
@@ -404,12 +162,13 @@ export const GetAccount: Macro<SocialEyesMacroResult<SocialAccountResult | null>
   try {
     const result = await queryGraph(GET_ACCOUNT_QUERY, { id }, {}, state.context);
     const account: SocialAccountResult | null = result?.socialEyesAccount ?? null;
-    // Instructions are derived from the redacted copy: one source of truth for
-    // what may leave this layer.
-    const safeAccount = redactSecrets(account);
+    // One traversal masks credential keys and scrubs credential values that the
+    // server echoed into an ordinary field. `props` is the only needle source: the
+    // account payload carries no credential keys (see ACCOUNT_FIELDS).
+    const safeAccount = safePayload(account, props) as SocialAccountResult | null;
     return {
       success: true,
-      data: safePayload(safeAccount, props, account),
+      data: safeAccount,
       tool: 'socialEyesAccount',
       params: redactSecrets(props),
       instructions: safeInstructions(
@@ -417,7 +176,6 @@ export const GetAccount: Macro<SocialEyesMacroResult<SocialAccountResult | null>
           ? `## Account: ${safeAccount.name} (${safeAccount.provider})\n- ID: ${safeAccount.id}\n- Active: ${safeAccount.isActive}\n- Scopes: ${safeAccount.scopes?.join(', ') ?? 'none'}`
           : `No account found with id: ${id}`,
         props,
-        account,
       ),
     };
   } catch (error) {
@@ -482,18 +240,33 @@ export const ConnectAccount: Macro<SocialEyesMacroResult<SocialAccountResult>, C
 
   try {
     const result = await mutateGraph(CONNECT_ACCOUNT_MUTATION, { input: props }, {}, state.context);
-    const account: SocialAccountResult = result?.socialEyesConnectAccount;
-    logger.info(`socialEyesConnectAccount: connected ${props.platform} account ${account?.id}`);
-    const safeAccount = redactSecrets(account);
+    const account: SocialAccountResult | null = result?.socialEyesConnectAccount ?? null;
+
+    // A null account is a real outcome (the mutation resolved without a payload),
+    // not a success. Reading `account.provider` unguarded threw a TypeError inside
+    // the try, which surfaced to the model as "Cannot read properties of null" and
+    // hid the actual result.
+    if (!account) {
+      return {
+        success: false,
+        error: 'socialEyesConnectAccount returned no account; the connection was not confirmed',
+        tool: 'socialEyesConnectAccount',
+        params: redactSecrets(props),
+      };
+    }
+
+    logger.info(`socialEyesConnectAccount: connected ${props.platform} account ${account.id}`);
+
+    // One traversal: credential keys masked and values from `props` scrubbed.
+    const safeAccount = safePayload(account, props);
     return {
       success: true,
-      data: safePayload(safeAccount, props, account),
+      data: safeAccount,
       tool: 'socialEyesConnectAccount',
       params: redactSecrets(props),
       instructions: safeInstructions(
         `## Account Connected\nSuccessfully connected ${safeAccount.provider} account **${safeAccount.name}** (ID: ${safeAccount.id}).`,
         props,
-        account,
       ),
     };
   } catch (error) {
@@ -565,18 +338,19 @@ export const DisconnectAccount: Macro<SocialEyesMacroResult<{ id: string; provid
 
   try {
     const result = await mutateGraph(DISCONNECT_ACCOUNT_MUTATION, { id }, {}, state.context);
-    const account = result?.socialEyesDisconnectAccount;
+    const account = result?.socialEyesDisconnectAccount ?? null;
     logger.info(`socialEyesDisconnectAccount: deactivated ${id}`);
-    const safeAccount = redactSecrets(account);
+
+    // One traversal: credential keys masked and values from `props` scrubbed.
+    const safeAccount = safePayload(account, props);
     return {
       success: true,
-      data: safePayload(safeAccount, props, account),
+      data: safeAccount,
       tool: 'socialEyesDisconnectAccount',
       params: redactSecrets(props),
       instructions: safeInstructions(
         `## Account Disconnected\nAccount **${safeAccount?.name}** (${safeAccount?.provider}) has been deactivated.`,
         props,
-        account,
       ),
     };
   } catch (error) {
@@ -653,11 +427,15 @@ export const LookupAccount: Macro<SocialEyesMacroResult, LookupAccountProps> = a
 
     const result = await queryGraph(LOOKUP_ACCOUNT_QUERY, { input }, {}, state.context);
     const profile = result?.socialEyesLookupAccount ?? null;
-    const safeProfile = redactSecrets(profile);
+
+    // One traversal: credential keys masked and values from `props` scrubbed.
+    // `profile` is not a needle source — the lookup selection carries no
+    // credential keys, so it would only cost a traversal.
+    const safeProfile = safePayload(profile, props);
 
     return {
       success: true,
-      data: safePayload(safeProfile, props, profile),
+      data: safeProfile,
       tool: 'socialEyesLookupAccount',
       params: redactSecrets(props),
       instructions: safeInstructions(
@@ -665,7 +443,6 @@ export const LookupAccount: Macro<SocialEyesMacroResult, LookupAccountProps> = a
           ? `## Profile Found: @${safeProfile.username}\n- Name: ${safeProfile.name ?? 'N/A'}\n- Followers: ${safeProfile.followerCount ?? 'N/A'}\n- Verified: ${safeProfile.verified ?? false}\n- URL: ${safeProfile.url ?? 'N/A'}\n- Bio: ${safeProfile.bio ?? 'N/A'}`
           : `No profile found for ${username ?? userId} on ${platform}.`,
         props,
-        profile,
       ),
     };
   } catch (error) {

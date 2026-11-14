@@ -579,11 +579,17 @@ describe('Account macro credential redaction', () => {
   });
 
   it('scrubs URL-encoded and differently-cased secret values', () => {
-    const encoded = encodeURIComponent(secrets.accessToken);
-    expect(scrubSecretValues(`url?token=${encoded}`, [secrets.accessToken])).toBe('url?token=[REDACTED]');
-    expect(scrubSecretValues(`bad ${secrets.accessToken.toUpperCase()}`, [secrets.accessToken])).toBe(
-      'bad [REDACTED]',
+    // The token must contain characters that *require* encoding, otherwise
+    // `encodeURIComponent(token) === token` and the encoded branch never runs —
+    // the earlier fixture (`tok-access-ABC123`) made this assertion vacuous.
+    const encodable = 'tok/ABC+123==';
+    expect(encodeURIComponent(encodable)).toBe('tok%2FABC%2B123%3D%3D');
+
+    expect(scrubSecretValues(`url?token=${encodeURIComponent(encodable)}`, [encodable])).toBe(
+      'url?token=[REDACTED]',
     );
+    expect(scrubSecretValues(`url?token=${encodable}`, [encodable])).toBe('url?token=[REDACTED]');
+    expect(scrubSecretValues(`bad ${encodable.toUpperCase()}`, [encodable])).toBe('bad [REDACTED]');
   });
 
   it('returns an error result, not a throw, when the rejection is not an Error', async () => {
@@ -687,5 +693,42 @@ describe('Account macro credential redaction', () => {
     const payload = (logger.error as jest.Mock).mock.calls[0][1] as Record<string, unknown>;
     expect(payload.message).toBe('Response not successful: 401');
     expect(String(payload.graphQLErrors)).toContain('unauthorized');
+  });
+
+  it('keeps the message and status of a nested networkError in the log payload', async () => {
+    // Apollo's `networkError` is an Error, whose message/stack are
+    // non-enumerable — `JSON.stringify` renders it as `{}` and the root cause was
+    // lost. A 401 from the transport must still name the 401.
+    const networkError = Object.assign(new TypeError('fetch failed'), { statusCode: 401 });
+    const apolloLike = Object.assign(new Error('Response not successful: 401'), {
+      networkError,
+    });
+    mockMutateGraph.mockRejectedValueOnce(apolloLike as never);
+
+    await ConnectAccount(connectProps, mockState);
+
+    const payload = (logger.error as jest.Mock).mock.calls[0][1] as Record<string, unknown>;
+    // Nested errors are kept as structured objects (not stringified to
+    // "[object Object]") so `message` and `statusCode` survive.
+    expect(payload.networkError).toMatchObject({
+      name: 'TypeError',
+      message: 'fetch failed',
+      statusCode: 401,
+    });
+    expect(JSON.stringify(payload.networkError)).toContain('fetch failed');
+  });
+
+  it('reports a null connect result as a failure instead of throwing a TypeError', async () => {
+    // A mutation that resolves without a payload must not crash on
+    // `account.provider`: that hid the real outcome behind
+    // "Cannot read properties of null".
+    mockMutateGraph.mockResolvedValueOnce({ socialEyesConnectAccount: null } as any);
+
+    const result = await ConnectAccount(connectProps, mockState);
+
+    expect(result.success).toBe(false);
+    expect(String(result.error)).toContain('returned no account');
+    expect(String(result.error)).not.toContain('Cannot read properties of null');
+    expect(JSON.stringify(result)).not.toContain(secrets.accessToken);
   });
 });
