@@ -1,0 +1,48 @@
+# Ignore rules for the reactory-socialeyes module.
+#
+# This module had no ignore file, so a local install or test run dropped
+# uncommitted artefacts into the working tree where a `git add -A` would pick
+# them up. `node_modules/` is the one that actually bit: the AI worktree test
+# harness symlinks it in from the host checkout, and without an ignore rule it
+# is staged as a new directory.
+
+# Dependencies
+#
+# No trailing slash on purpose. `node_modules/` matches only a real directory,
+# and the AI worktree test harness symlinks node_modules in from the host
+# checkout — a symlink to a directory is not a directory, so the slashed form
+# left it staged as "?? node_modules". Verified with `git check-ignore`.
+node_modules
+
+# Test and coverage output
+coverage/
+.nyc_output/
+junit.xml
+
+# Compiler / bundler output
+dist/
+*.tsbuildinfo
+
+# NOT ignored on purpose: build/
+# `build/` is tracked source here (pre-build.sh, post-build.sh, buiild.rsync).
+# Ignoring the directory would be wrong, and ignoring build output under a
+# tracked directory needs an explicit path rule, not the bare directory name.
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Agent run artefacts
+# .ai-agent/ is written into a worktree when an engineering run executes here.
+.ai-agent/
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
