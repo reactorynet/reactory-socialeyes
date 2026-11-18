@@ -17,7 +17,7 @@ const PostMetrics = (props: PostMetricsProps) => {
   ]);
 
   const { MaterialCore } = Material;
-  const { Box, Typography, Icon, Paper, Grid2: Grid } = MaterialCore;
+  const { Box, Typography, Icon, Paper, Grid } = MaterialCore;
 
   const metrics = post.metrics || {};
 
