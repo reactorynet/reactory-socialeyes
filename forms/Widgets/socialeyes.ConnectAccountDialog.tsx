@@ -275,7 +275,9 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
               <Icon sx={{ fontSize: 40, color: platform.color }}>
                 {platform.icon}
               </Icon>
-              <Typography variant="subtitle1" fontWeight={isSelected ? 700 : 400}>
+              <Typography variant="subtitle1" sx={{
+                fontWeight: isSelected ? 700 : 400
+              }}>
                 {platform.label}
               </Typography>
             </Box>
@@ -347,7 +349,9 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
             )}
             <Box sx={{ flex: 1, overflow: 'hidden' }}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                <Typography variant="body2" fontWeight={600} noWrap>
+                <Typography variant="body2" noWrap sx={{
+                  fontWeight: 600
+                }}>
                   {lookupResult.name || lookupResult.username}
                 </Typography>
                 {lookupResult.verified && (

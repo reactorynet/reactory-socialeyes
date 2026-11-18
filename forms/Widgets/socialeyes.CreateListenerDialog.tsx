@@ -220,8 +220,10 @@ const CreateListenerDialog = (props: CreateListenerDialogProps) => {
               onChange={(e: any) => updateField('intervalMinutes', parseInt(e.target.value, 10) || 0)}
               fullWidth
               type="number"
-              inputProps={{ min: 0 }}
               helperText="How often to check for new content (0 for webhook-based)"
+              slotProps={{
+                htmlInput: { min: 0 }
+              }}
             />
           </Box>
         )}
