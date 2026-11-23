@@ -141,7 +141,6 @@ const CreateListenerDialog = (props: CreateListenerDialogProps) => {
       onClose={handleClose}
       maxWidth="sm"
       fullWidth
-      disableEscapeKeyDown={submitting}
     >
       <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         <Icon color="primary">hearing</Icon>

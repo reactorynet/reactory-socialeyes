@@ -506,7 +506,6 @@ const ConnectAccountDialog = (props: ConnectAccountDialogProps) => {
       onClose={handleClose}
       maxWidth="sm"
       fullWidth
-      disableEscapeKeyDown={submitting}
     >
       <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         <Icon color="primary">add_link</Icon>
