@@ -60,7 +60,12 @@ const PostMetrics = (props: PostMetricsProps) => {
       </Typography>
       <Grid container spacing={2} sx={{ mb: 3 }}>
         {metricCards.map((metric) => (
-          <Grid item xs={6} sm={3} key={metric.label}>
+          <Grid
+            key={metric.label}
+            size={{
+              xs: 6,
+              sm: 3
+            }}>
             <Paper
               elevation={0}
               sx={{

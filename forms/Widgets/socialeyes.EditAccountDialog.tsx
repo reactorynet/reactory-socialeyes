@@ -310,7 +310,9 @@ const EditAccountDialog = (props: EditAccountDialogProps) => {
             )}
             <Box sx={{ flex: 1, overflow: 'hidden' }}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                <Typography variant="body2" fontWeight={600} noWrap>
+                <Typography variant="body2" noWrap sx={{
+                  fontWeight: 600
+                }}>
                   {lookupResult.name || lookupResult.username}
                 </Typography>
                 {lookupResult.verified && (
@@ -449,7 +451,6 @@ const EditAccountDialog = (props: EditAccountDialogProps) => {
       onClose={handleClose}
       maxWidth="sm"
       fullWidth
-      disableEscapeKeyDown={submitting}
     >
       <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         <Icon color="primary">edit</Icon>
